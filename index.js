@@ -1,62 +1,62 @@
-// 1. Charger les clés d'API en toute sécurité
-require('dotenv').config();
-const paydunya = require('paydunya');
 const express = require('express');
-const bodyParser = require('body-parser');
-const crypto = require('crypto');
+const paydunya = require('paydunya');
+require('dotenv').config();
 
 const app = express();
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
 
-// 2. Configuration PayDunya
-const setup = new paydunya.Setup({
-  masterKey: process.env.PAYDUNYA_MASTER_KEY,
-  privateKey: process.env.PAYDUNYA_PRIVATE_KEY,
-  publicKey: process.env.PAYDUNYA_PUBLIC_KEY,
-  token: process.env.PAYDUNYA_TOKEN,
-  mode: process.env.PAYDUNYA_MODE
+// Middleware pour lire le JSON dans les requêtes
+app.use(express.json());
+
+// 1. Configuration de PayDunya avec les variables d'environnement
+paydunya.setup({
+    master_key: process.env.PAYDUNYA_MASTER_KEY,
+    private_key: process.env.PAYDUNYA_PRIVATE_KEY,
+    public_key: process.env.PAYDUNYA_PUBLIC_KEY,
+    token: process.env.PAYDUNYA_TOKEN,
+    mode: process.env.PAYDUNYA_MODE || 'test' // 'test' en sandbox, 'live' en production
 });
 
-// 3. Configuration des informations de ton magasin
-const store = new paydunya.Store({
-    name: 'Ma Boutique Termux', 
-    tagline: "Test depuis Android",
-    phoneNumber: '771234567',
-    postalAddress: 'Dakar',
-    callbackURL: 'http://ika-book.com/ipn' // L'URL où PayDunya confirmera le paiement
+// Route de test simple pour vérifier que le serveur répond
+app.get('/', (req, res) => {
+    res.json({ status: 'success', message: 'Le backend Ika-Book fonctionne parfaitement !' });
 });
 
-// 4. Configuration de la route IPN (Notification instantanée)
-app.post('/ipn', (req, res) => {
+// 2. Route pour créer un paiement (générer une facture PayDunya)
+app.post('/creer-paiement', async (req, res) => {
     try {
-        const data = req.body.data;
-        const status = data.status;
-        const hashRecu = data.hash;
+        const { montant, description, nomClient } = req.body;
 
-        // Sécurité : Hachage de la Master Key en SHA-512
-        const monHash = crypto.createHash('sha512').update(process.env.PAYDUNYA_MASTER_KEY).digest('hex');
+        // Création de la facture Checkout PayDunya
+        const invoice = new paydunya.CheckoutInvoice({
+            name: nomClient || "Client Ika-Book",
+            total_amount: montant || 100, // Montant par défaut
+            description: description || "Paiement de livre",
+            return_url: "https://ika-book.com/succes",
+            cancel_url: "https://ika-book.com/annulation"
+        });
 
-        // Vérification de la provenance de la requête
-        if (hashRecu === monHash) {
-            if (status === "completed") {
-                console.log("Succès ! Montant reçu :", data.invoice.total_amount);
-                res.status(200).send("OK");
-            } else {
-                console.log("Statut différent :", status);
-                res.status(400).send("Paiement non complété");
-            }
+        // Demande de création de la facture auprès de PayDunya
+        if (await invoice.create()) {
+            // Renvoyer le lien de redirection au client (frontend ou application mobile)
+            res.json({
+                success: true,
+                response_text: invoice.response_text,
+                invoice_url: invoice.url, // URL vers laquelle rediriger l'utilisateur pour payer
+                token: invoice.token
+            });
         } else {
-            console.log("ALERTE SÉCURITÉ: Cette requête ne provient pas de PayDunya !");
-            res.status(403).send("Accès refusé");
+            res.status(400).json({
+                success: false,
+                message: invoice.response_text
+            });
         }
     } catch (error) {
-        console.error("Erreur serveur :", error);
-        res.status(500).send("Erreur");
+        console.error("Erreur PayDunya :", error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
-// Lancer le serveur
+// Démarrage du serveur sur le port attribué par Render ou 3000 par défaut
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Serveur démarré sur le port ${PORT} !`);
