@@ -3,11 +3,10 @@ const paydunya = require('paydunya');
 require('dotenv').config();
 
 const app = express();
-
-// Middleware pour lire le JSON dans les requêtes
 app.use(express.json());
-// 1. Configuration de PayDunya avec les variables d'environnement
-paydunya.setup({
+
+// 1. Initialiser le Setup avec le constructeur
+const setup = new paydunya.Setup({
     masterKey: process.env.PAYDUNYA_MASTER_KEY,
     privateKey: process.env.PAYDUNYA_PRIVATE_KEY,
     publicKey: process.env.PAYDUNYA_PUBLIC_KEY,
@@ -15,51 +14,49 @@ paydunya.setup({
     mode: process.env.PAYDUNYA_MODE || 'test'
 });
 
-// NOUVEAU : Configuration obligatoire de la boutique
-paydunya.store.name = "Ika-Book";
-paydunya.store.tagline = "La librairie en ligne";
-paydunya.store.postal_address = "Bamako, Mali"; // Modifie selon ton adresse
-paydunya.store.phone_number = "+22300000000"; // Modifie avec ton numéro
-paydunya.store.website_url = "https://ika-book.com";
+// 2. Initialiser le Store avec le constructeur
+const store = new paydunya.Store({
+    name: "Ika-Book", // Requis par la ligne 8 !
+    tagline: "La librairie en ligne",
+    postal_address: "Bamako, Mali",
+    phone_number: "+22300000000",
+    website_url: "https://ika-book.com"
+});
 
-// 2. Route pour créer un paiement (générer une facture PayDunya)
 app.post('/creer-paiement', async (req, res) => {
     try {
         const { montant, description, nomClient } = req.body;
 
-        // Création de la facture Checkout PayDunya
-        const invoice = new paydunya.CheckoutInvoice({
-            name: nomClient || "Client Ika-Book",
-            total_amount: montant || 100, // Montant par défaut
-            description: description || "Paiement de livre",
-            return_url: "https://ika-book.com/succes",
-            cancel_url: "https://ika-book.com/annulation"
+        // 3. Injecter setup et store dans la facture
+        const invoice = new paydunya.CheckoutInvoice(setup, store);
+
+        // 4. Configurer le montant (Requis par la ligne 91) et la description
+        invoice.totalAmount = montant;
+        invoice.description = description;
+
+        // Optionnel mais recommandé : Ajouter un article pour le reçu
+        invoice.addItem("Achat Ika-Book", 1, montant, montant, description);
+
+        // 5. Lancer la création de la facture vers l'API
+        await invoice.create();
+
+        // 6. Succès ! Retourner le lien de paiement généré
+        res.json({
+            success: true,
+            url: invoice.url,
+            token: invoice.token
         });
 
-        // Demande de création de la facture auprès de PayDunya
-        if (await invoice.create()) {
-            // Renvoyer le lien de redirection au client (frontend ou application mobile)
-            res.json({
-                success: true,
-                response_text: invoice.response_text,
-                invoice_url: invoice.url, // URL vers laquelle rediriger l'utilisateur pour payer
-                token: invoice.token
-            });
-        } else {
-            res.status(400).json({
-                success: false,
-                message: invoice.response_text
-            });
-        }
     } catch (error) {
-        console.error("Erreur PayDunya :", error);
-        res.status(500).json({ success: false, error: error.message });
+        console.error("Erreur PayDunya:", error);
+        res.status(500).json({ 
+            success: false, 
+            error: error.message,
+            details: error.data || "Aucun détail supplémentaire"
+        });
     }
 });
 
-// Démarrage du serveur sur le port attribué par Render ou 3000 par défaut
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Serveur démarré sur le port ${PORT} !`);
-});
+app.listen(PORT, () => console.log(`Serveur démarré sur le port ${PORT} !`));
 
