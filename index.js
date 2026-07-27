@@ -6,20 +6,21 @@ const app = express();
 
 // Middleware pour lire le JSON dans les requêtes
 app.use(express.json());
-
 // 1. Configuration de PayDunya avec les variables d'environnement
 paydunya.setup({
     master_key: process.env.PAYDUNYA_MASTER_KEY,
     private_key: process.env.PAYDUNYA_PRIVATE_KEY,
     public_key: process.env.PAYDUNYA_PUBLIC_KEY,
     token: process.env.PAYDUNYA_TOKEN,
-    mode: process.env.PAYDUNYA_MODE || 'test' // 'test' en sandbox, 'live' en production
+    mode: process.env.PAYDUNYA_MODE || 'test'
 });
 
-// Route de test simple pour vérifier que le serveur répond
-app.get('/', (req, res) => {
-    res.json({ status: 'success', message: 'Le backend Ika-Book fonctionne parfaitement !' });
-});
+// NOUVEAU : Configuration obligatoire de la boutique
+paydunya.store.name = "Ika-Book";
+paydunya.store.tagline = "La librairie en ligne";
+paydunya.store.postal_address = "Bamako, Mali"; // Modifie selon ton adresse
+paydunya.store.phone_number = "+22300000000"; // Modifie avec ton numéro
+paydunya.store.website_url = "https://ika-book.com";
 
 // 2. Route pour créer un paiement (générer une facture PayDunya)
 app.post('/creer-paiement', async (req, res) => {
