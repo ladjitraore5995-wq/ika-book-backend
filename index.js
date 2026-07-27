@@ -57,7 +57,8 @@ app.post('/ipn', (req, res) => {
 });
 
 // Lancer le serveur
-app.listen(3000, () => {
-    console.log('Serveur démarré sur le port 3000 sur Termux !');
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Serveur démarré sur le port ${PORT} !`);
 });
 
