@@ -8,9 +8,9 @@ const app = express();
 app.use(express.json());
 // 1. Configuration de PayDunya avec les variables d'environnement
 paydunya.setup({
-    master_key: process.env.PAYDUNYA_MASTER_KEY,
-    private_key: process.env.PAYDUNYA_PRIVATE_KEY,
-    public_key: process.env.PAYDUNYA_PUBLIC_KEY,
+    masterKey: process.env.PAYDUNYA_MASTER_KEY,
+    privateKey: process.env.PAYDUNYA_PRIVATE_KEY,
+    publicKey: process.env.PAYDUNYA_PUBLIC_KEY,
     token: process.env.PAYDUNYA_TOKEN,
     mode: process.env.PAYDUNYA_MODE || 'test'
 });
