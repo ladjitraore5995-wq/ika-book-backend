@@ -1,115 +1,159 @@
 const express = require('express');
 const cors = require('cors');
 const paydunya = require('paydunya');
-const crypto = require('crypto'); // Requis pour le hash SHA-512 de l'IPN
+const crypto = require('crypto');
+const axios = require('axios'); // Ajouté pour faciliter les requêtes vers l'API PUSH
 require('dotenv').config();
 
 const app = express();
 
-// 1. Activer CORS et le parsing JSON et URL-Encoded (Requis pour PayDunya)
-app.use(cors());
+// 1. Configuration des Middlewares
+// On autorise spécifiquement ton domaine pour des raisons de sécurité
+const corsOptions = {
+    origin: ['https://ika-book.com', 'https://www.ika-book.com', 'http://localhost:3000'],
+    optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
 app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // PayDunya poste les données IPN sous ce format
+app.use(express.urlencoded({ extended: true }));
 
-// 2. Initialiser le Setup PayDunya
+// 2. Initialisation du Setup PayDunya (PAR & PSR)
 const setup = new paydunya.Setup({
     masterKey: process.env.PAYDUNYA_MASTER_KEY,
     privateKey: process.env.PAYDUNYA_PRIVATE_KEY,
     publicKey: process.env.PAYDUNYA_PUBLIC_KEY,
     token: process.env.PAYDUNYA_TOKEN,
-    mode: process.env.PAYDUNYA_MODE || 'test'
+    mode: process.env.PAYDUNYA_MODE || 'test' // 'test' ou 'live'
 });
 
-// 3. Initialiser le Store PayDunya (Correction des clés en camelCase)
 const store = new paydunya.Store({
     name: "Ika-Book",
     tagline: "Vente de livres en ligne",
-    postalAddress: "Adresse de la boutique", // Corrigé : postalAddress
-    phoneNumber: "Numéro de téléphone",      // Corrigé : phoneNumber
-    websiteURL: "https://ika-book.com",      // Corrigé : websiteURL
-    logoURL: "https://ika-book.com/logo.png",// Corrigé : logoURL
-    // URL globale où PayDunya enverra les notifications de paiement (IPN)
-    callbackURL: "https://ika-book-backend.onrender.com/webhook" 
+    postalAddress: "Adresse de la boutique",
+    phoneNumber: "Numéro de téléphone",
+    websiteURL: "https://ika-book.com",
+    logoURL: "https://ika-book.com/logo.png",
+    callbackURL: "https://api.ika-book.com/webhook" // Ton URL backend sur Render
 });
-// Route pour la création de facture
-app.post('/creer-paiement', async (req, res) => {
-    try {
-        const { montant, description, nomClient } = req.body;
 
-        const invoice = new paydunya.CheckoutInvoice(setup, store);
+// ==========================================
+// ROUTE PSR (PAIEMENT SANS REDIRECTION)
+// ==========================================
+
+// Le frontend fera un appel GET vers cette route pour récupérer le token JSON
+app.get('/paydunya-api', async (req, res) => {
+    try {
+        // On récupère le montant depuis l'URL (ex: ?amount=5000), sinon on fixe un défaut
+        const montant = req.query.amount ? parseInt(req.query.amount) : 1000;
         
-        invoice.addItem(description || "Achat Ika-Book", 1, montant, montant);
+        const invoice = new paydunya.CheckoutInvoice(setup, store);
+        invoice.addItem("Achat Ika-Book (PSR)", 1, montant, montant);
         invoice.totalAmount = montant;
 
-        // On exécute la création sans assigner le résultat à une variable booléenne
         await invoice.create();
 
-        // On vérifie directement si PayDunya a généré l'URL de la facture
-        if (invoice.url) {
+        if (invoice.token) {
+            // Réponse formatée exactement comme l'exige la documentation PSR
             res.status(200).json({
                 success: true,
-                invoice_url: invoice.url,
-                token: invoice.token,
-                message: invoice.responseText // Affichera "Transaction Found"
+                mode: process.env.PAYDUNYA_MODE || 'test',
+                token: invoice.token
             });
         } else {
-            res.status(400).json({
-                success: false,
-                message: invoice.responseText || "Erreur lors de la création de la facture"
-            });
+            res.status(400).json({ success: false, message: invoice.responseText });
         }
     } catch (error) {
-        console.error("Erreur serveur:", error);
-        res.status(500).json({
-            success: false,
-            error: error.message
-        });
+        console.error("Erreur PSR:", error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
+// ==========================================
+// ROUTES PUSH (DEBOURSEMENT)
+// ==========================================
 
+// Fonction utilitaire pour générer les headers de l'API PUSH
+const getPushHeaders = () => ({
+    'Content-Type': 'application/json',
+    'PAYDUNYA-MASTER-KEY': process.env.PAYDUNYA_MASTER_KEY,
+    'PAYDUNYA-PRIVATE-KEY': process.env.PAYDUNYA_PRIVATE_KEY,
+    'PAYDUNYA-TOKEN': process.env.PAYDUNYA_TOKEN
+});
 
-// 5. Route IPN (Instant Payment Notification) pour la confirmation des paiements
+// Étape 1 : Initiation du déboursement (Obtenir l'invoice)
+app.post('/api/push/init', async (req, res) => {
+    try {
+        const { account_alias, amount, withdraw_mode } = req.body;
+
+        const response = await axios.post('https://app.paydunya.com/api/v2/disburse/get-invoice', {
+            account_alias,
+            amount: parseInt(amount),
+            withdraw_mode, // ex: 'orange-money-senegal', 'paydunya', etc.
+            callback_url: "https://api.ika-book.com/webhook" 
+        }, { headers: getPushHeaders() });
+
+        res.status(200).json(response.data);
+    } catch (error) {
+        console.error("Erreur Init PUSH:", error.response ? error.response.data : error.message);
+        res.status(500).json({ success: false, error: error.response ? error.response.data : "Erreur interne" });
+    }
+});
+
+// Étape 2 : Soumission du déboursement
+app.post('/api/push/submit', async (req, res) => {
+    try {
+        const { disburse_invoice, disburse_id } = req.body;
+
+        const payload = { disburse_invoice };
+        if (disburse_id) payload.disburse_id = disburse_id; // Optionnel
+
+        const response = await axios.post('https://app.paydunya.com/api/v2/disburse/submit-invoice', 
+            payload, 
+            { headers: getPushHeaders() }
+        );
+
+        res.status(200).json(response.data);
+    } catch (error) {
+        console.error("Erreur Submit PUSH:", error.response ? error.response.data : error.message);
+        res.status(500).json({ success: false, error: error.response ? error.response.data : "Erreur interne" });
+    }
+});
+
+// ==========================================
+// WEBHOOK (IPN) - RÉCEPTION DES NOTIFICATIONS
+// ==========================================
+
 app.post('/webhook', (req, res) => {
     try {
-        // La structure renvoyée se trouve sous l'index "data"
-        const data = req.body.data;
+        const data = req.body.data || req.body; // Tolérance selon le format exact envoyé par PayDunya
         
-        if (!data) {
-            return res.status(400).send("Aucune donnée reçue");
+        if (!data || !data.hash) {
+            return res.status(400).send("Données invalides");
         }
 
-        const status = data.status;
-        const hash = data.hash;
-        const invoice = data.invoice;
-
-        // Création du Hash SHA-512 de votre MasterKey
         const masterKeyHash = crypto
             .createHash('sha512')
             .update(process.env.PAYDUNYA_MASTER_KEY)
             .digest('hex');
 
-        // Comparaison du hash généré avec celui reçu
-        if (hash === masterKeyHash) {
-            if (status === "completed") {
-                // Le paiement est confirmé avec succès
-                // TODO: Mettez à jour le statut de la commande de votre client dans votre base de données ici
-                console.log(`Paiement de ${invoice.total_amount} FCFA complété avec succès !`);
+        if (data.hash === masterKeyHash) {
+            if (data.status === "completed" || data.status === "success") {
+                // TODO: Mettre à jour la base de données (Commande client ou Déboursement)
+                console.log(`Transaction validée : ${data.status}`);
             }
-            // Répondre à PayDunya que la notification a bien été reçue
-            res.status(200).send("Notification traitée");
+            res.status(200).send("Notification traitée avec succès");
         } else {
-            console.log("Alerte: Cette requête n'a pas été émise par PayDunya");
+            console.error("Alerte Sécurité: Signature invalide détectée");
             res.status(403).send("Signature invalide");
         }
     } catch (error) {
-        console.error("Erreur IPN:", error);
+        console.error("Erreur Webhook:", error);
         res.status(500).send("Erreur interne du serveur");
     }
 });
 
-// 6. Démarrer le serveur Express
+// 3. Lancement du serveur
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Serveur en écoute sur le port ${PORT}`);
+    console.log(`Serveur Ika-Book API opérationnel sur le port ${PORT}`);
 });
