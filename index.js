@@ -6,7 +6,7 @@ require('dotenv').config();
 const app = express();
 
 // 2. Activer CORS et le parsing JSON
-app.use(cors()); 
+app.use(cors());
 app.use(express.json());
 
 // 3. Initialiser le Setup PayDunya
@@ -21,10 +21,11 @@ const setup = new paydunya.Setup({
 // 4. Initialiser le Store PayDunya
 const store = new paydunya.Store({
     name: "Ika-Book",
-    tagline: "La librairie en ligne",
-    postal_address: "Bamako, Mali",
-    phone_number: "+22300000000",
-    website_url: "https://ika-book.com"
+    tagline: "Vente de livres en ligne",
+    postal_address: "Adresse de la boutique",
+    phone_number: "Numéro de téléphone",
+    website_url: "https://ika-book.com",
+    logo_url: "https://ika-book.com/logo.png"
 });
 
 // 5. Route pour la création de facture
@@ -32,38 +33,40 @@ app.post('/creer-paiement', async (req, res) => {
     try {
         const { montant, description, nomClient } = req.body;
 
-        // Injecter setup et store dans la facture
+        // Initialisation de la facture Checkout PayDunya
         const invoice = new paydunya.CheckoutInvoice(setup, store);
-
-        // Configurer le montant et la description
+        
+        // Ajout de l'article (description, quantité, prix unitaire, prix total)
+        invoice.addItem(description || "Achat Ika-Book", 1, montant, montant);
         invoice.totalAmount = montant;
-        invoice.description = description;
 
-        // Ajouter un article pour le reçu
-        invoice.addItem("Achat Ika-Book", 1, montant, montant, description);
+        // Création de la facture via l'API PayDunya
+        const success = await invoice.create();
 
-        // Lancer la création de la facture vers l'API PayDunya
-        await invoice.create();
-
-        // Succès : Retourner le lien de paiement généré
-        res.json({
-            success: true,
-            url: invoice.url,
-            token: invoice.token
-        });
-
+        if (success) {
+            res.json({
+                success: true,
+                invoice_url: invoice.invoice_url,
+                token: invoice.token
+            });
+        } else {
+            res.status(400).json({
+                success: false,
+                message: invoice.response_text || "Erreur lors de la création de la facture"
+            });
+        }
     } catch (error) {
-        console.error("Erreur PayDunya:", error);
-        res.status(500).json({ 
-            success: false, 
-            error: error.message,
-            details: error.data || "Aucun détail supplémentaire"
+        console.error("Erreur serveur:", error);
+        res.status(500).json({
+            success: false,
+            error: error.message
         });
     }
 });
 
+// 6. Démarrer le serveur Express
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Serveur en cours d'exécution sur le port ${PORT}`);
+    console.log(`Serveur en écoute sur le port ${PORT}`);
 });
 
