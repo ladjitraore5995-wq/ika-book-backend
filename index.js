@@ -32,7 +32,7 @@ const store = new paydunya.Store({
     callbackURL: "https://ika-book-backend.onrender.com/webhook" 
 });
 
-// 4. Route pour la création de facture
+// Route pour la création de facture
 app.post('/creer-paiement', async (req, res) => {
     try {
         const { montant, description, nomClient } = req.body;
@@ -47,15 +47,13 @@ app.post('/creer-paiement', async (req, res) => {
         if (success) {
             res.json({
                 success: true,
-                invoice_url: invoice.invoice_url,
+                invoice_url: invoice.url, // Corrigé : invoice.url
                 token: invoice.token
             });
         } else {
-            console.log("Erreur PayDunya détaillée :", invoice); 
-
             res.status(400).json({
                 success: false,
-                message: invoice.response_text || "Erreur lors de la création de la facture"
+                message: invoice.responseText || "Erreur lors de la création de la facture" // Corrigé : invoice.responseText
             });
         }
     } catch (error) {
@@ -66,6 +64,7 @@ app.post('/creer-paiement', async (req, res) => {
         });
     }
 });
+
 
 // 5. Route IPN (Instant Payment Notification) pour la confirmation des paiements
 app.post('/webhook', (req, res) => {
