@@ -51,6 +51,8 @@ app.post('/creer-paiement', async (req, res) => {
                 token: invoice.token
             });
         } else {
+            console.log("Erreur PayDunya détaillée :", invoice); 
+
             res.status(400).json({
                 success: false,
                 message: invoice.response_text || "Erreur lors de la création de la facture"
