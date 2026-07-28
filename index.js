@@ -31,7 +31,6 @@ const store = new paydunya.Store({
     // URL globale où PayDunya enverra les notifications de paiement (IPN)
     callbackURL: "https://ika-book-backend.onrender.com/webhook" 
 });
-
 // Route pour la création de facture
 app.post('/creer-paiement', async (req, res) => {
     try {
@@ -42,18 +41,21 @@ app.post('/creer-paiement', async (req, res) => {
         invoice.addItem(description || "Achat Ika-Book", 1, montant, montant);
         invoice.totalAmount = montant;
 
-        const success = await invoice.create();
+        // On exécute la création sans assigner le résultat à une variable booléenne
+        await invoice.create();
 
-        if (success) {
-            res.json({
+        // On vérifie directement si PayDunya a généré l'URL de la facture
+        if (invoice.url) {
+            res.status(200).json({
                 success: true,
-                invoice_url: invoice.url, // Corrigé : invoice.url
-                token: invoice.token
+                invoice_url: invoice.url,
+                token: invoice.token,
+                message: invoice.responseText // Affichera "Transaction Found"
             });
         } else {
             res.status(400).json({
                 success: false,
-                message: invoice.responseText || "Erreur lors de la création de la facture" // Corrigé : invoice.responseText
+                message: invoice.responseText || "Erreur lors de la création de la facture"
             });
         }
     } catch (error) {
@@ -64,6 +66,7 @@ app.post('/creer-paiement', async (req, res) => {
         });
     }
 });
+
 
 
 // 5. Route IPN (Instant Payment Notification) pour la confirmation des paiements
