@@ -71,14 +71,15 @@ app.get('/paydunya-api', async (req, res) => {
 // ==========================================
 // ROUTES PUSH (DEBOURSEMENT)
 // ==========================================
-
 // Fonction utilitaire pour générer les headers de l'API PUSH
 const getPushHeaders = () => ({
     'Content-Type': 'application/json',
     'PAYDUNYA-MASTER-KEY': process.env.PAYDUNYA_MASTER_KEY,
     'PAYDUNYA-PRIVATE-KEY': process.env.PAYDUNYA_PRIVATE_KEY,
-    'PAYDUNYA-TOKEN': process.env.PAYDUNYA_TOKEN
+    'PAYDUNYA-TOKEN': process.env.PAYDUNYA_TOKEN,
+    'Mode': process.env.PAYDUNYA_MODE || 'test' // Ajout de l'en-tête Mode pour le test PUSH
 });
+
 
 // Étape 1 : Initiation du déboursement (Obtenir l'invoice)
 app.post('/api/push/init', async (req, res) => {
