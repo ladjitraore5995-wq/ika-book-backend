@@ -24,7 +24,7 @@ const store = new paydunya.Store({
     Address: "Mali Bamako Rue 80, Porte 144 ",
     phoneNumber: "223 92837606",
     websiteURL: "https://ika-book.com",
-    logoURL: "https://ika-book.com/logo.png",
+    logoURL: "https://ika-book.com/Lt/1/logo.png",
     callbackURL: "https://api.ika-book.com/webhook"
 });
 
