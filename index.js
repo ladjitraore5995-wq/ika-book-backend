@@ -21,11 +21,11 @@ const setup = new paydunya.Setup({
 const store = new paydunya.Store({
     name: "Ika-Book",
     tagline: "Bibliothèque Virtuelle & Assistant IA Polyvalent",
-    Address: "Mali Bamako Rue 80, Porte 144 ",
+    Address: "Mali Bamako Rue 80, Porte 144", // ✅ Modifié : 'postalAddress' au lieu de 'Address'
     phoneNumber: "223 92837606",
     websiteURL: "https://ika-book.com",
     logoURL: "https://ika-book.com/Lt/1/logo.JPG",
-    callbackURL: "https://api.ika-book.com/webhook"
+    callbackURL: "https://api.ika-book.com/webhook" // URL pour l'IPN (invisible pour l'utilisateur)
 });
 
 const transactions = {}; 
@@ -37,7 +37,8 @@ app.post('/creer-paiement', async (req, res) => {
         const invoice = new paydunya.CheckoutInvoice(setup, store);
         invoice.addItem(description || "Achat chez Ika-Book", 1, montant, montant);
         invoice.totalAmount = montant;
-invoice.returnURL = 'http://api.ika-book.com'
+invoice.returnUrl = 'https://ika-book.com'; 
+        invoice.cancelUrl = 'https://ika-book.com';
         await invoice.create();
 
         if (invoice.url) {
