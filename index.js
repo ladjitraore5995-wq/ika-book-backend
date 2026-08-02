@@ -20,9 +20,9 @@ const setup = new paydunya.Setup({
 
 const store = new paydunya.Store({
     name: "Ika-Book",
-    tagline: "Vente de livres en ligne",
-    postalAddress: "Adresse de la boutique",
-    phoneNumber: "Numéro de téléphone",
+    tagline: "Bibliothèque Virtuelle & Assistant IA Polyvalent",
+    Address: "Mali Bamako Rue 80, Porte 144 ",
+    phoneNumber: "223 92837606",
     websiteURL: "https://ika-book.com",
     logoURL: "https://ika-book.com/logo.png",
     callbackURL: "https://api.ika-book.com/webhook"
@@ -35,9 +35,9 @@ app.post('/creer-paiement', async (req, res) => {
         const { montant, description, nomClient, userId, metadata } = req.body;
 
         const invoice = new paydunya.CheckoutInvoice(setup, store);
-        invoice.addItem(description || "Achat Ika-Book", 1, montant, montant);
+        invoice.addItem(description || "Achat chez Ika-Book", 1, montant, montant);
         invoice.totalAmount = montant;
-
+invoice.returnURL = 'http://api.ika-book.com'
         await invoice.create();
 
         if (invoice.url) {
@@ -125,4 +125,164 @@ app.get('/statut-paiement/:token', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// ==========================================
+// ROUTES API PUSH (DEBOURSEMENT PAYDUNYA)
+// ==========================================
+
+app.post('/initier-push', async (req, res) => {
+    try {
+        const { account_alias, amount, withdraw_mode, debit_account_number } = req.body;
+
+        // Validation basique : le montant ne doit pas être une valeur décimale
+        if (amount % 1 !== 0) {
+            return res.status(400).json({ success: false, message: "Le montant ne doit pas être une valeur décimale." });
+        }
+
+        // Configuration des en-têtes requis pour l'API Push PayDunya
+        const headers = {
+            "Content-Type": "application/json",
+            "PAYDUNYA-MASTER-KEY": process.env.PAYDUNYA_MASTER_KEY,
+            "PAYDUNYA-PRIVATE-KEY": process.env.PAYDUNYA_PRIVATE_KEY,
+            "PAYDUNYA-TOKEN": process.env.PAYDUNYA_TOKEN
+        };
+
+        // ---------------------------------------------------------
+        // ÉTAPE 1 : INITIATION DU DEBOURSEMENT (get-invoice)
+        // ---------------------------------------------------------
+        const payloadInitiation = {
+            account_alias: account_alias,
+            amount: amount,
+            withdraw_mode: withdraw_mode,
+            callback_url: "https://api.ika-book.com/webhook-push" // L'URL doit être valide, sans quoi la transaction ne sera pas autorisée
+        };
+
+        // Ajout du paramètre optionnel uniquement si le mode est paydunya
+        if (withdraw_mode === "paydunya" && debit_account_number) {
+            payloadInitiation.debit_account_number = debit_account_number;
+        }
+
+        const responseInitiation = await fetch("https://app.paydunya.com/api/v2/disburse/get-invoice", {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify(payloadInitiation)
+        });
+
+        const dataInitiation = await responseInitiation.json();
+
+        // Si la réponse est différente de "00", on arrête et on renvoie l'erreur
+        if (dataInitiation.response_code !== "00") {
+            return res.status(400).json({ success: false, message: "Échec de l'initiation", details: dataInitiation });
+        }
+
+        const disburse_token = dataInitiation.disburse_token; // Statut intermédiaire "Created" à ce stade
+
+        // ---------------------------------------------------------
+        // ÉTAPE 2 : SOUMISSION DU DEBOURSEMENT (submit-invoice)
+        // ---------------------------------------------------------
+        const payloadSoumission = {
+            disburse_invoice: disburse_token,
+            disburse_id: "PUSH-" + Date.now() // Numéro de référence de transaction facultatif
+        };
+
+        const responseSoumission = await fetch("https://app.paydunya.com/api/v2/disburse/submit-invoice", {
+            method: "POST",
+            headers: headers,
+            body: JSON.stringify(payloadSoumission)
+        });
+
+        const dataSoumission = await responseSoumission.json();
+
+        // Retourner la réponse finale au client
+        res.status(200).json({
+            success: true,
+            message: "Requête de déboursement traitée",
+            data: dataSoumission
+        });
+
+    } catch (error) {
+        console.error("Erreur API PUSH:", error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+
+// ==========================================
+// WEBHOOK SPECIFIQUE AU PUSH
+// ==========================================
+
+app.post('/webhook-push', (req, res) => {
+    try {
+        const data = req.body;
+        if (!data) return res.status(400).send("Aucune donnée reçue");
+
+        const { hash, status, token, amount, withdraw_mode, transaction_id, disburse_id } = data;
+
+        // Le hash renvoyé par PayDunya est vérifié avec l'algorithme SHA-512 de la MasterKey
+        const masterKeyHash = crypto
+            .createHash('sha512')
+            .update(process.env.PAYDUNYA_MASTER_KEY)
+            .digest('hex');
+
+        if (hash === masterKeyHash) {
+            console.log(`[WEBHOOK PUSH] Déboursement ${token} - Statut final: ${status} - Montant: ${amount}`);
+            
+            // Logique de traitement selon les statuts finaux possibles : success ou failed (ou pending si en cours)
+            if (status === "success") {
+                // La transaction a abouti
+                // TODO: Mettre à jour la base de données pour confirmer le déboursement
+            } else if (status === "failed") {
+                // La transaction n'a pas abouti
+                // TODO: Mettre à jour la base de données et informer le client
+            }
+
+            res.status(200).send("Notification de déboursement traitée");
+        } else {
+            res.status(403).send("Signature invalide");
+        }
+    } catch (error) {
+        console.error("Erreur webhook push:", error);
+        res.status(500).send("Erreur interne du serveur");
+    }
+});
+// ==========================================
+// ROUTE PER (PAIEMENT ET REDISTRIBUTION)
+// ==========================================
+
+app.post('/transfert-per', async (req, res) => {
+    try {
+        // Récupération des données envoyées dans la requête
+        const { compteDestinataire, montant } = req.body;
+
+        // Vérification de base
+        if (!compteDestinataire || !montant) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Le compte destinataire (email ou téléphone) et le montant sont requis." 
+            });
+        }
+
+        // Initialisation du service DirectPay avec votre configuration "setup" existante
+        const directPay = new paydunya.DirectPay(setup);
+
+        // Exécution du transfert
+        await directPay.creditAccount(compteDestinataire, montant);
+
+        // Si le transfert réussit, on renvoie les informations de la transaction
+        res.status(200).json({
+            success: true,
+            description: directPay.description,
+            responseText: directPay.responseText,
+            transactionID: directPay.transactionID
+        });
+
+    } catch (error) {
+        // En cas d'échec (ex: fonds insuffisants, compte introuvable, PER non activé)
+        console.error("Erreur lors du transfert PER:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Échec du transfert.",
+            error: error.message || error 
+        });
+    }
+});
 app.listen(PORT, () => console.log(`Serveur en écoute sur le port ${PORT}`));
