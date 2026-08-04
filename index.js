@@ -246,117 +246,43 @@ app.post('/webhook-push', (req, res) => {
     }
 });
 // ==========================================
-// --- NOUVELLE FONCTION DE PAIEMENT ET REDISTRIBUTION (SÉCURISÉE ET STRICTE) ---
-async function payAndDistributeHandler(request, env) {
-  try {
-    // 1. Authentification
-    const user = await verifyFirebaseToken(request);
-    const body = await request.json();
-    const docId = body.docId;
-
-    if (!docId) {
-      return badRequest(request, "docId manquant.");
-    }
-
-    // 2. Récupération des informations du document via D1
-    const doc = await getDocument(env, docId);
-    if (!doc) {
-      return notFound(request, "Document introuvable.");
-    }
-    if (doc.type !== "payant") {
-      return badRequest(request, "Ce document n'est pas payant.");
-    }
-
-    // --- Nettoyage du prix ---
-    const rawPrice = doc.brutPrice || doc.price;
-    const cleanPriceString = String(rawPrice).replace(/[^0-9]/g, '');
-    const price = Number(cleanPriceString);
-
-    if (isNaN(price) || price <= 0) {
-      return badRequest(request, "Prix du document invalide.");
-    }
-
-    // 3. Calcul de la redistribution (42% Plateforme / 58% Auteur)
-    // Utilisation de Math.round() pour éviter d'envoyer des nombres à virgule à PayDunya
-    const partPlateforme = Math.round(price * 0.42);
-    const partAuteur = Math.round(price * 0.58);
-    
-    const numeroPlateforme = "22374744773";
-
-    // 4. Ordre de paiement / redistribution avec VÉRIFICATION STRICTE et SÉCURITÉ
+app.post('/transfert-per', async (req, res) => {
     try {
-      // --- Transfert Plateforme ---
-      const repPlateforme = await fetch("https://api.ika-book.com/transfert-per", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-server-key": env.S2S_SECRET_KEY // Preuve d'identité du Worker
-        },
-        body: JSON.stringify({ compteDestinataire: numeroPlateforme, montant: partPlateforme })
-      });
-      
-      const dataPlateforme = await repPlateforme.json();
-      
-      if (!repPlateforme.ok || dataPlateforme.success !== true) {
-        console.error("Erreur transfert Plateforme:", dataPlateforme);
-        return serverError(request, new Error("Échec du paiement vers la plateforme. Transaction annulée."));
-      }
+        // --- BLOC DE SÉCURITÉ AJOUTÉ ---
+        const serverKey = req.headers['x-server-key'];
+        if (serverKey !== process.env.S2S_SECRET_KEY) {
+            return res.status(403).json({ success: false, message: "Accès refusé. Clé serveur invalide." });
+        }
+        // ------------------------------
 
-      // --- Transfert Auteur ---
-      const repAuteur = await fetch("https://api.ika-book.com/transfert-per", {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          "x-server-key": env.S2S_SECRET_KEY // Preuve d'identité du Worker
-        },
-        body: JSON.stringify({ compteDestinataire: doc.secretAuthorPhone, montant: partAuteur })
-      });
-      
-      const dataAuteur = await repAuteur.json();
+        const { compteDestinataire, montant } = req.body;
 
-      if (!repAuteur.ok || dataAuteur.success !== true) {
-        console.error("Erreur transfert Auteur:", dataAuteur);
-        return serverError(request, new Error("Échec de la redistribution à l'auteur. Transaction annulée."));
-      }
-      
-    } catch (fetchErr) {
-      console.error("Impossible de contacter l'API Ika-Book :", fetchErr);
-      // On bloque l'accès car l'API Express est injoignable
-      return serverError(request, new Error("Service de paiement temporairement indisponible."));
+        // Arrondir le montant pour éviter que PayDunya ne rejette les montants avec virgule (ex: 839.58)
+        const montantArrondi = Math.round(Number(montant));
+
+        if (!compteDestinataire || !montantArrondi || montantArrondi <= 0) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Le compte destinataire et un montant valide sont requis." 
+            });
+        }
+
+        const directPay = new paydunya.DirectPay(setup);
+        await directPay.creditAccount(compteDestinataire, montantArrondi);
+
+        res.status(200).json({
+            success: true,
+            description: directPay.description,
+            responseText: directPay.responseText,
+            transactionID: directPay.transactionID
+        });
+
+    } catch (error) {
+        console.error("Erreur lors du transfert PER:", error);
+        res.status(500).json({ 
+            success: false, 
+            message: "Échec du transfert.",
+            error: error.message || error 
+        });
     }
-
-    // 5. Mettre à jour la base de données (Exécuté UNIQUEMENT si les transferts ont réussi)
-    const result = await env.DB.prepare(
-      `SELECT achats FROM paniers WHERE userId = ?`
-    ).bind(user.uid).first();
-    
-    const achats = result?.achats ? JSON.parse(result.achats) : {};
-    
-    achats[docId] = {
-      purchaseDate: (new Date()).toISOString(),
-      expiresAt: addMonths(CONFIG.ACCESS_DURATION_MONTHS),
-      paymentMethod: "redistribution"
-    };
-    
-    await env.DB.prepare(
-      `INSERT INTO paniers (userId, achats) VALUES (?, ?)
-       ON CONFLICT(userId) DO UPDATE SET achats = excluded.achats`
-    ).bind(user.uid, JSON.stringify(achats)).run();
-
-    // 6. Succès de la transaction
-    return success(request, {
-      success: true,
-      message: "Paiement et redistribution effectués. Accès accordé pour 9 mois.",
-      expiresAt: achats[docId].expiresAt,
-      redistribution: {
-        prixTotal: price,
-        plateforme: partPlateforme,
-        auteur: partAuteur
-      }
-    });
-
-  } catch (error) {
-    return serverError(request, error);
-  }
-}
-__name(payAndDistributeHandler, "payAndDistributeHandler");
+});
