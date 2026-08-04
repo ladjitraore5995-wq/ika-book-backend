@@ -21,11 +21,11 @@ const setup = new paydunya.Setup({
 const store = new paydunya.Store({
     name: "Ika-Book",
     tagline: "Bibliothèque Virtuelle & Assistant IA Polyvalent",
-    Address: "Mali Bamako Rue 80, Porte 144", // ✅ Modifié : 'postalAddress' au lieu de 'Address'
+    postalAddress: "Mali Bamako Rue 80, Porte 144", // CORRIGÉ : 'postalAddress' au lieu de 'Address'
     phoneNumber: "223 92837606",
-    websiteURL: "https://ika-book.com",
-    logoURL: "https://ika-book.com/Lt/1/logo.JPG",
-    callbackURL: "https://api.ika-book.com/webhook" // URL pour l'IPN (invisible pour l'utilisateur)
+    websiteUrl: "https://ika-book.com", // CORRIGÉ : 'websiteUrl' au lieu de 'websiteURL'
+    logoUrl: "https://ika-book.com/Lt/1/logo.JPG", // CORRIGÉ : 'logoUrl' au lieu de 'logoURL'
+    callbackUrl: "https://api.ika-book.com/webhook" // CORRIGÉ : 'callbackUrl' au lieu de 'callbackURL'
 });
 
 const transactions = {}; 
@@ -34,10 +34,16 @@ app.post('/creer-paiement', async (req, res) => {
     try {
         const { montant, description, nomClient, userId, metadata } = req.body;
 
+        // Sécurité : On s'assure que le montant est un entier valide
+        const montantInt = parseInt(montant, 10);
+        if (isNaN(montantInt) || montantInt <= 0) {
+            return res.status(400).json({ success: false, message: "Montant invalide" });
+        }
+
         const invoice = new paydunya.CheckoutInvoice(setup, store);
-        invoice.addItem(description || "Achat chez Ika-Book", 1, montant, montant);
-        invoice.totalAmount = montant;
-invoice.returnUrl = 'https://ika-book.com'; 
+        invoice.addItem(description || "Achat chez Ika-Book", 1, montantInt, montantInt);
+        invoice.totalAmount = montantInt;
+        invoice.returnUrl = 'https://ika-book.com'; 
         invoice.cancelUrl = 'https://ika-book.com';
         await invoice.create();
 
@@ -126,6 +132,7 @@ app.get('/statut-paiement/:token', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+
 // ==========================================
 // ROUTES API PUSH (DEBOURSEMENT PAYDUNYA)
 // ==========================================
@@ -245,7 +252,11 @@ app.post('/webhook-push', (req, res) => {
         res.status(500).send("Erreur interne du serveur");
     }
 });
+
 // ==========================================
+// ROUTE PER (PAIEMENT ET REDISTRIBUTION)
+// ==========================================
+
 app.post('/transfert-per', async (req, res) => {
     try {
         // --- BLOC DE SÉCURITÉ AJOUTÉ ---
@@ -286,3 +297,5 @@ app.post('/transfert-per', async (req, res) => {
         });
     }
 });
+
+app.listen(PORT, () => console.log(`Serveur en écoute sur le port ${PORT}`));
