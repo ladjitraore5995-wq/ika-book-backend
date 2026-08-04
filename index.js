@@ -21,11 +21,11 @@ const setup = new paydunya.Setup({
 const store = new paydunya.Store({
     name: "Ika-Book",
     tagline: "Bibliothèque Virtuelle & Assistant IA Polyvalent",
-    postalAddress: "Mali Bamako Rue 80, Porte 144", // CORRIGÉ : 'postalAddress' au lieu de 'Address'
+    postalAddress: "Mali Bamako Rue 80, Porte 144", // CORRIGÉ : 'postalAddress'
     phoneNumber: "223 92837606",
-    websiteUrl: "https://ika-book.com", // CORRIGÉ : 'websiteUrl' au lieu de 'websiteURL'
-    logoUrl: "https://ika-book.com/Lt/1/logo.JPG", // CORRIGÉ : 'logoUrl' au lieu de 'logoURL'
-    callbackUrl: "https://api.ika-book.com/webhook" // CORRIGÉ : 'callbackUrl' au lieu de 'callbackURL'
+    websiteUrl: "https://ika-book.com", // CORRIGÉ : 'websiteUrl'
+    logoUrl: "https://ika-book.com/Lt/1/logo.JPG", // CORRIGÉ : 'logoUrl'
+    callbackUrl: "https://api.ika-book.com/webhook" // CORRIGÉ : 'callbackUrl'
 });
 
 const transactions = {}; 
@@ -92,7 +92,8 @@ app.post('/webhook', async (req, res) => {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
-                                "x-server-key": process.env.S2S_SECRET_KEY 
+                                // --- UTILISATION DE LA CLÉ IA ICI ---
+                                "x-server-key": process.env.S2S_SECRET_KEY_IA 
                             },
                             body: JSON.stringify({
                                 metadata: currentTransaction.metadata
@@ -101,10 +102,10 @@ app.post('/webhook', async (req, res) => {
 
                         const s2sResult = await s2sResponse.json();
                         if(!s2sResponse.ok) {
-                            console.error("Erreur critique lors de la livraison Worker :", s2sResult);
+                            console.error("Erreur critique lors de la livraison Worker IA :", s2sResult);
                         }
                     } catch (fetchError) {
-                        console.error("Échec de la communication avec le Worker Cloudflare :", fetchError);
+                        console.error("Échec de la communication avec le Worker Cloudflare IA :", fetchError);
                     }
                     
                 } else if (status === "cancelled") {
@@ -141,12 +142,10 @@ app.post('/initier-push', async (req, res) => {
     try {
         const { account_alias, amount, withdraw_mode, debit_account_number } = req.body;
 
-        // Validation basique : le montant ne doit pas être une valeur décimale
         if (amount % 1 !== 0) {
             return res.status(400).json({ success: false, message: "Le montant ne doit pas être une valeur décimale." });
         }
 
-        // Configuration des en-têtes requis pour l'API Push PayDunya
         const headers = {
             "Content-Type": "application/json",
             "PAYDUNYA-MASTER-KEY": process.env.PAYDUNYA_MASTER_KEY,
@@ -154,17 +153,13 @@ app.post('/initier-push', async (req, res) => {
             "PAYDUNYA-TOKEN": process.env.PAYDUNYA_TOKEN
         };
 
-        // ---------------------------------------------------------
-        // ÉTAPE 1 : INITIATION DU DEBOURSEMENT (get-invoice)
-        // ---------------------------------------------------------
         const payloadInitiation = {
             account_alias: account_alias,
             amount: amount,
             withdraw_mode: withdraw_mode,
-            callback_url: "https://api.ika-book.com/webhook-push" // L'URL doit être valide, sans quoi la transaction ne sera pas autorisée
+            callback_url: "https://api.ika-book.com/webhook-push" 
         };
 
-        // Ajout du paramètre optionnel uniquement si le mode est paydunya
         if (withdraw_mode === "paydunya" && debit_account_number) {
             payloadInitiation.debit_account_number = debit_account_number;
         }
@@ -177,19 +172,15 @@ app.post('/initier-push', async (req, res) => {
 
         const dataInitiation = await responseInitiation.json();
 
-        // Si la réponse est différente de "00", on arrête et on renvoie l'erreur
         if (dataInitiation.response_code !== "00") {
             return res.status(400).json({ success: false, message: "Échec de l'initiation", details: dataInitiation });
         }
 
-        const disburse_token = dataInitiation.disburse_token; // Statut intermédiaire "Created" à ce stade
+        const disburse_token = dataInitiation.disburse_token; 
 
-        // ---------------------------------------------------------
-        // ÉTAPE 2 : SOUMISSION DU DEBOURSEMENT (submit-invoice)
-        // ---------------------------------------------------------
         const payloadSoumission = {
             disburse_invoice: disburse_token,
-            disburse_id: "PUSH-" + Date.now() // Numéro de référence de transaction facultatif
+            disburse_id: "PUSH-" + Date.now() 
         };
 
         const responseSoumission = await fetch("https://app.paydunya.com/api/v2/disburse/submit-invoice", {
@@ -200,7 +191,6 @@ app.post('/initier-push', async (req, res) => {
 
         const dataSoumission = await responseSoumission.json();
 
-        // Retourner la réponse finale au client
         res.status(200).json({
             success: true,
             message: "Requête de déboursement traitée",
@@ -225,7 +215,6 @@ app.post('/webhook-push', (req, res) => {
 
         const { hash, status, token, amount, withdraw_mode, transaction_id, disburse_id } = data;
 
-        // Le hash renvoyé par PayDunya est vérifié avec l'algorithme SHA-512 de la MasterKey
         const masterKeyHash = crypto
             .createHash('sha512')
             .update(process.env.PAYDUNYA_MASTER_KEY)
@@ -234,13 +223,10 @@ app.post('/webhook-push', (req, res) => {
         if (hash === masterKeyHash) {
             console.log(`[WEBHOOK PUSH] Déboursement ${token} - Statut final: ${status} - Montant: ${amount}`);
             
-            // Logique de traitement selon les statuts finaux possibles : success ou failed (ou pending si en cours)
             if (status === "success") {
-                // La transaction a abouti
-                // TODO: Mettre à jour la base de données pour confirmer le déboursement
+                // TODO: Mettre à jour la base de données
             } else if (status === "failed") {
-                // La transaction n'a pas abouti
-                // TODO: Mettre à jour la base de données et informer le client
+                // TODO: Mettre à jour la base de données
             }
 
             res.status(200).send("Notification de déboursement traitée");
@@ -259,16 +245,16 @@ app.post('/webhook-push', (req, res) => {
 
 app.post('/transfert-per', async (req, res) => {
     try {
-        // --- BLOC DE SÉCURITÉ AJOUTÉ ---
         const serverKey = req.headers['x-server-key'];
-        if (serverKey !== process.env.S2S_SECRET_KEY) {
+        
+        // --- UTILISATION DE LA CLÉ PDF ICI ---
+        if (serverKey !== process.env.S2S_SECRET_KEY_PDF) {
             return res.status(403).json({ success: false, message: "Accès refusé. Clé serveur invalide." });
         }
-        // ------------------------------
+        // -------------------------------------
 
         const { compteDestinataire, montant } = req.body;
 
-        // Arrondir le montant pour éviter que PayDunya ne rejette les montants avec virgule (ex: 839.58)
         const montantArrondi = Math.round(Number(montant));
 
         if (!compteDestinataire || !montantArrondi || montantArrondi <= 0) {
