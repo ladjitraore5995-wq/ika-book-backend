@@ -6,10 +6,16 @@ require('dotenv').config();
 
 const app = express();
 
+// ====================================================================
+// 1. MIDDLEWARES
+// ====================================================================
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// ====================================================================
+// 2. CONFIGURATION PAYDUNYA
+// ====================================================================
 const setup = new paydunya.Setup({
     masterKey: process.env.PAYDUNYA_MASTER_KEY,
     privateKey: process.env.PAYDUNYA_PRIVATE_KEY,
@@ -21,20 +27,21 @@ const setup = new paydunya.Setup({
 const store = new paydunya.Store({
     name: "Ika-Book",
     tagline: "Bibliothèque Virtuelle & Assistant IA Polyvalent",
-    postalAddress: "Mali Bamako Rue 80, Porte 144", // CORRIGÉ : 'postalAddress'
+    postalAddress: "Mali Bamako Rue 80, Porte 144",
     phoneNumber: "223 92837606",
-    websiteUrl: "https://ika-book.com", // CORRIGÉ : 'websiteUrl'
-    logoUrl: "https://ika-book.com/Lt/1/logo.JPG", // CORRIGÉ : 'logoUrl'
-    callbackUrl: "https://api.ika-book.com/webhook" // CORRIGÉ : 'callbackUrl'
+    websiteUrl: "https://ika-book.com",
+    logoUrl: "https://ika-book.com/Lt/1/logo.JPG",
+    callbackUrl: "https://api.ika-book.com/webhook"
 });
 
-const transactions = {}; 
+// ====================================================================
+// 3. ROUTES DE PAIEMENT (ACHAT DE CRÉDITS)
+// ====================================================================
 
 app.post('/creer-paiement', async (req, res) => {
     try {
         const { montant, description, nomClient, userId, metadata } = req.body;
 
-        // Sécurité : On s'assure que le montant est un entier valide
         const montantInt = parseInt(montant, 10);
         if (isNaN(montantInt) || montantInt <= 0) {
             return res.status(400).json({ success: false, message: "Montant invalide" });
@@ -43,17 +50,18 @@ app.post('/creer-paiement', async (req, res) => {
         const invoice = new paydunya.CheckoutInvoice(setup, store);
         invoice.addItem(description || "Achat chez Ika-Book", 1, montantInt, montantInt);
         invoice.totalAmount = montantInt;
-        invoice.returnUrl = 'https://ika-book.com'; 
-        invoice.cancelUrl = 'https://ika-book.com';
+        
+        // 1. UTILISER LES CUSTOM DATA POUR SAUVEGARDER LE METADATA CHEZ PAYDUNYA
+        invoice.addCustomData("userId", userId);
+        invoice.addCustomData("metadata", metadata);
+
         await invoice.create();
 
         if (invoice.url) {
-            transactions[invoice.token] = {
-                status: 'pending',
-                userId: userId,
-                metadata: metadata 
-            };
-
+            // 2. AJOUTER LE TOKEN DANS L'URL DE RETOUR
+            invoice.returnUrl = `https://ika-book.com/paiement-reussi?token=${invoice.token}`; 
+            invoice.cancelUrl = `https://ika-book.com/paiement-annule?token=${invoice.token}`;
+            
             res.status(200).json({
                 success: true,
                 invoice_url: invoice.url,
@@ -73,7 +81,7 @@ app.post('/webhook', async (req, res) => {
         const data = req.body.data;
         if (!data) return res.status(400).send("Aucune donnée reçue");
 
-        const { status, hash, invoice } = data;
+        const { status, hash, invoice, custom_data } = data; // 3. RECUPERER LES CUSTOM_DATA
         
         const masterKeyHash = crypto
             .createHash('sha512')
@@ -81,35 +89,31 @@ app.post('/webhook', async (req, res) => {
             .digest('hex');
 
         if (hash === masterKeyHash) {
-            const currentTransaction = transactions[invoice.token];
+            
+            // Si le paiement est réussi
+            if (status === "completed" || status === "success") {
+                try {
+                    // On récupère le metadata stocké chez Paydunya
+                    const transactionMetadata = custom_data ? custom_data.metadata : null;
 
-            if (currentTransaction) {
-                if (status === "completed" && currentTransaction.status !== 'completed') {
-                    currentTransaction.status = 'completed';
-                    
-                    try {
+                    if (transactionMetadata) {
                         const s2sResponse = await fetch("https://mobilemoney.ladjitraore5995.workers.dev/s2s/deliver", {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
-                                // --- UTILISATION DE LA CLÉ IA ICI ---
                                 "x-server-key": process.env.S2S_SECRET_KEY_IA 
                             },
                             body: JSON.stringify({
-                                metadata: currentTransaction.metadata
+                                metadata: transactionMetadata
                             })
                         });
 
-                        const s2sResult = await s2sResponse.json();
                         if(!s2sResponse.ok) {
-                            console.error("Erreur critique lors de la livraison Worker IA :", s2sResult);
+                            console.error("Erreur critique lors de la livraison Worker IA :", await s2sResponse.text());
                         }
-                    } catch (fetchError) {
-                        console.error("Échec de la communication avec le Worker Cloudflare IA :", fetchError);
                     }
-                    
-                } else if (status === "cancelled") {
-                    currentTransaction.status = 'cancelled';
+                } catch (fetchError) {
+                    console.error("Échec de la communication avec le Worker Cloudflare IA :", fetchError);
                 }
             }
             res.status(200).send("Notification traitée");
@@ -117,22 +121,30 @@ app.post('/webhook', async (req, res) => {
             res.status(403).send("Signature invalide");
         }
     } catch (error) {
+        console.error("Erreur Webhook:", error);
         res.status(500).send("Erreur interne du serveur");
     }
 });
 
-app.get('/statut-paiement/:token', (req, res) => {
-    const token = req.params.token;
-    const transaction = transactions[token];
-    
-    if (transaction) {
-        res.status(200).json({ success: true, status: transaction.status });
-    } else {
-        res.status(404).json({ success: false, status: 'unknown' });
+// 4. INTERROGER PAYDUNYA DIRECTEMENT AU LIEU DE LA MÉMOIRE LOCALE
+app.get('/statut-paiement/:token', async (req, res) => {
+    try {
+        const token = req.params.token;
+        const invoice = new paydunya.CheckoutInvoice(setup, store);
+        
+        // La méthode confirm() interroge les serveurs de Paydunya pour le statut en temps réel
+        const status = await invoice.confirm(token); 
+        
+        if (status) {
+            res.status(200).json({ success: true, status: invoice.status }); // 'completed', 'pending', 'cancelled'
+        } else {
+            res.status(404).json({ success: false, status: 'unknown' });
+        }
+    } catch (e) {
+        res.status(500).json({ success: false, status: 'unknown', error: e.message });
     }
 });
 
-const PORT = process.env.PORT || 3000;
 
 // ==========================================
 // ROUTES API PUSH (DEBOURSEMENT PAYDUNYA)
@@ -284,4 +296,5 @@ app.post('/transfert-per', async (req, res) => {
     }
 });
 
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Serveur en écoute sur le port ${PORT}`));
