@@ -101,7 +101,7 @@ app.post('/webhook', async (req, res) => {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
-                                "x-server-key": process.env.S2S_SECRET_KEY_IA 
+                                "x-server-key": process.env.S2S_SECRET_KEY 
                             },
                             body: JSON.stringify({
                                 metadata: transactionMetadata
