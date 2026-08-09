@@ -13,6 +13,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Route d'accueil pour éviter l'erreur "Cannot GET /" dans le navigateur
+app.get('/', (req, res) => {
+    res.status(200).json({ message: "L'API de paiement Ika-Book est en ligne et fonctionnelle !" });
+});
+
 // ====================================================================
 // 2. CONFIGURATION PAYDUNYA
 // ====================================================================
@@ -97,6 +102,7 @@ app.post('/webhook', async (req, res) => {
                     const transactionMetadata = custom_data ? custom_data.metadata : null;
 
                     if (transactionMetadata) {
+                        // LA CORRECTION EST ICI : Ajout de token et invoice_url
                         const s2sResponse = await fetch("https://mobilemoney.ladjitraore5995.workers.dev/s2s/deliver", {
                             method: "POST",
                             headers: {
@@ -104,7 +110,9 @@ app.post('/webhook', async (req, res) => {
                                 "x-server-key": process.env.S2S_SECRET_KEY 
                             },
                             body: JSON.stringify({
-                                metadata: transactionMetadata
+                                token: invoice.token, // L'identifiant essentiel pour arrêter la boucle du frontend
+                                metadata: transactionMetadata,
+                                invoice_url: invoice.receipt_url || "" // Optionnel : l'URL du reçu
                             })
                         });
 
