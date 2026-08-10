@@ -236,7 +236,7 @@ app.post('/webhook-pdf', async (req, res) => {
                     const transactionMetadata = custom_data ? custom_data.metadata : null;
                     if (transactionMetadata) {
                         // Remplacez l'URL par l'URL exacte de votre Worker S2S pour les PDF
-                        const s2sResponse = await fetch("https://mobilemoney.ladjitraore5995.workers.dev/s2s/pdf", {
+                        const s2sResponse = await fetch("https://pont-pdf.ladjitraore5995.workers.dev/s2s/pdf", {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
@@ -320,7 +320,7 @@ app.post('/webhook-push', async (req, res) => {
                     const transactionMetadata = custom_data ? custom_data.metadata : null;
                     if (transactionMetadata) {
                         // Remplacez l'URL par l'URL exacte de votre Worker S2S pour l'Ambassadeur
-                        const s2sResponse = await fetch("https://mobilemoney.ladjitraore5995.workers.dev/s2s/ambassadeur", {
+                        const s2sResponse = await fetch("https://ikacredit.ladjitraore5995.workers.dev/s2s/ambassadeur", {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
