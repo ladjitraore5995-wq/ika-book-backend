@@ -69,32 +69,58 @@ app.post('/creer-paiement', async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 });
-
-// --- 3.2 ACHAT DE PDF ---
+// --- ACHAT DE PDF (Express App) ---
 app.post('/creer-paiement-pdf', async (req, res) => {
     try {
         const { montant, description, nomClient, userId, metadata } = req.body;
+
+        // Validation du montant
         const montantInt = parseInt(montant, 10);
-        if (isNaN(montantInt) || montantInt <= 0) return res.status(400).json({ success: false, message: "Montant invalide" });
+        if (isNaN(montantInt) || montantInt <= 0) {
+            return res.status(400).json({ success: false, message: "Montant invalide" });
+        }
+
+        // Validation basique des métadonnées requises
+        if (!metadata || !metadata.docId || !userId) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "Métadonnées invalides ou incomplètes (docId ou userId manquant)" 
+            });
+        }
 
         const invoice = new paydunya.CheckoutInvoice(setup, store);
+        
         invoice.addItem(description || "Achat PDF chez Ika-Book", 1, montantInt, montantInt);
         invoice.totalAmount = montantInt;
-        invoice.addCustomData("userId", userId);
-        invoice.addCustomData("metadata", metadata);
+
+        // Transmission standardisée à PayDunya
+        invoice.addCustomData("userId", String(userId));
+        invoice.addCustomData("docId", String(metadata.docId));
         invoice.addCustomData("type", "pdf");
+        
+        // Stockage sécurisé de l'objet metadata sous forme de chaîne JSON
+        invoice.addCustomData("metadata", JSON.stringify(metadata));
 
-        await invoice.create();
+        const created = await invoice.create();
 
-        if (invoice.url) {
+        if (created && invoice.url) {
             invoice.returnUrl = `https://ika-book.com/paiement-reussi?token=${invoice.token}`; 
             invoice.cancelUrl = `https://ika-book.com/paiement-annule?token=${invoice.token}`;
-            res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
+
+            return res.status(200).json({ 
+                success: true, 
+                invoice_url: invoice.url, 
+                token: invoice.token 
+            });
         } else {
-            res.status(400).json({ success: false, message: invoice.responseText || "Erreur" });
+            return res.status(400).json({ 
+                success: false, 
+                message: invoice.responseText || "Échec de la création de la facture PayDunya" 
+            });
         }
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        console.error("Erreur /creer-paiement-pdf:", error);
+        return res.status(500).json({ success: false, error: error.message });
     }
 });
 
