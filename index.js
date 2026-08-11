@@ -1,3 +1,4 @@
+
 const express = require('express');
 const cors = require('cors');
 const paydunya = require('paydunya');
@@ -69,58 +70,32 @@ app.post('/creer-paiement', async (req, res) => {
         res.status(500).json({ success: false, error: error.message });
     }
 });
-// --- ACHAT DE PDF (Express App) ---
+
+// --- 3.2 ACHAT DE PDF ---
 app.post('/creer-paiement-pdf', async (req, res) => {
     try {
         const { montant, description, nomClient, userId, metadata } = req.body;
-
-        // Validation du montant
         const montantInt = parseInt(montant, 10);
-        if (isNaN(montantInt) || montantInt <= 0) {
-            return res.status(400).json({ success: false, message: "Montant invalide" });
-        }
-
-        // Validation basique des métadonnées requises
-        if (!metadata || !metadata.docId || !userId) {
-            return res.status(400).json({ 
-                success: false, 
-                message: "Métadonnées invalides ou incomplètes (docId ou userId manquant)" 
-            });
-        }
+        if (isNaN(montantInt) || montantInt <= 0) return res.status(400).json({ success: false, message: "Montant invalide" });
 
         const invoice = new paydunya.CheckoutInvoice(setup, store);
-        
         invoice.addItem(description || "Achat PDF chez Ika-Book", 1, montantInt, montantInt);
         invoice.totalAmount = montantInt;
-
-        // Transmission standardisée à PayDunya
-        invoice.addCustomData("userId", String(userId));
-        invoice.addCustomData("docId", String(metadata.docId));
+        invoice.addCustomData("userId", userId);
+        invoice.addCustomData("metadata", metadata);
         invoice.addCustomData("type", "pdf");
-        
-        // Stockage sécurisé de l'objet metadata sous forme de chaîne JSON
-        invoice.addCustomData("metadata", JSON.stringify(metadata));
 
-        const created = await invoice.create();
+        await invoice.create();
 
-        if (created && invoice.url) {
+        if (invoice.url) {
             invoice.returnUrl = `https://ika-book.com/paiement-reussi?token=${invoice.token}`; 
             invoice.cancelUrl = `https://ika-book.com/paiement-annule?token=${invoice.token}`;
-
-            return res.status(200).json({ 
-                success: true, 
-                invoice_url: invoice.url, 
-                token: invoice.token 
-            });
+            res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ 
-                success: false, 
-                message: invoice.responseText || "Échec de la création de la facture PayDunya" 
-            });
+            res.status(400).json({ success: false, message: invoice.responseText || "Erreur" });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement-pdf:", error);
-        return res.status(500).json({ success: false, error: error.message });
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
@@ -153,70 +128,7 @@ app.post('/creer-paiement-push', async (req, res) => {
 });
 
 // ====================================================================
-// FONCTION DE PUSH MOBILE MONEY (B2C DISPERSEMENT)
-// ====================================================================
-async function transfererArgentB2C(telephone, montant, operateur) {
-    try {
-        // 1. Déterminer le code opérateur PayDunya (Mali par défaut)
-        let withdrawMode = "";
-        const op = (operateur || "").toLowerCase();
-        
-        if (op.includes("orange")) withdrawMode = "orange-money-mali";
-        else if (op.includes("moov")) withdrawMode = "moov-mali";
-        else withdrawMode = operateur; // Si vous passez déjà le code exact
-
-        console.log(`⏳ Préparation Push B2C : ${montant} FCFA vers ${telephone} via ${withdrawMode}`);
-
-        const headers = {
-            "Content-Type": "application/json",
-            "PAYDUNYA-MASTER-KEY": process.env.PAYDUNYA_MASTER_KEY,
-            "PAYDUNYA-PRIVATE-KEY": process.env.PAYDUNYA_PRIVATE_KEY,
-            "PAYDUNYA-TOKEN": process.env.PAYDUNYA_TOKEN
-        };
-
-        // Étape 1 : Obtenir le token de dispersement
-        const resInvoice = await fetch("https://app.paydunya.com/api/v1/disburse/get-invoice", {
-            method: "POST",
-            headers: headers,
-            body: JSON.stringify({
-                account_alias: telephone,
-                amount: montant,
-                withdraw_mode: withdrawMode
-            })
-        });
-
-        const invoiceData = await resInvoice.json();
-        if (invoiceData.response_code !== "00") {
-            throw new Error(`Erreur Init B2C: ${invoiceData.response_text || 'Inconnue'}`);
-        }
-
-        // Étape 2 : Confirmer et déclencher l'envoi des fonds
-        const resSubmit = await fetch("https://app.paydunya.com/api/v1/disburse/submit-invoice", {
-            method: "POST",
-            headers: headers,
-            body: JSON.stringify({
-                disburse_invoice: invoiceData.disburse_token,
-                disburse_id: `b2c_${Date.now()}` // ID unique de transaction
-            })
-        });
-
-        const submitData = await resSubmit.json();
-        
-        if (submitData.response_code === "00") {
-            console.log(`✅ Succès du Push B2C vers ${telephone} : ${submitData.response_text}`);
-            return true;
-        } else {
-            throw new Error(`Erreur Validation B2C: ${submitData.response_text}`);
-        }
-
-    } catch (error) {
-        console.error("❌ Échec du Push B2C :", error.message);
-        return false;
-    }
-}
-
-// ====================================================================
-// 4. LE WEBHOOK CENTRALISÉ AVEC DISTRIBUTION (DIRECT PAY / B2C)
+// 4. LE WEBHOOK CENTRALISÉ AVEC DISTRIBUTION (DIRECT PAY)
 // ====================================================================
 
 app.post('/webhook', async (req, res) => {
@@ -225,9 +137,15 @@ app.post('/webhook', async (req, res) => {
         if (!data) return res.status(400).send("Aucune donnée reçue");
 
         const { status, hash, invoice, custom_data } = data;
-        const masterKeyHash = crypto.createHash('sha512').update(process.env.PAYDUNYA_MASTER_KEY).digest('hex');
+        
+        const masterKeyHash = crypto
+            .createHash('sha512')
+            .update(process.env.PAYDUNYA_MASTER_KEY)
+            .digest('hex');
 
-        if (hash !== masterKeyHash) return res.status(403).send("Signature invalide");
+        if (hash !== masterKeyHash) {
+            return res.status(403).send("Signature invalide");
+        }
 
         if (status === "completed" || status === "success") {
             const transactionMetadata = custom_data ? custom_data.metadata : null;
@@ -235,15 +153,23 @@ app.post('/webhook', async (req, res) => {
             
             if (transactionMetadata) {
                 let workerUrl = "";
-                if (transactionType === "pdf") workerUrl = "https://pont-pdf.ladjitraore5995.workers.dev/s2s/pdf";
-                else if (transactionType === "push") workerUrl = "https://ikacredit.ladjitraore5995.workers.dev/s2s/ambassadeur";
-                else workerUrl = "https://mobilemoney.ladjitraore5995.workers.dev/s2s/deliver";
+
+                if (transactionType === "pdf") {
+                    workerUrl = "https://pont-pdf.ladjitraore5995.workers.dev/s2s/pdf";
+                } else if (transactionType === "push") {
+                    workerUrl = "https://ikacredit.ladjitraore5995.workers.dev/s2s/ambassadeur";
+                } else {
+                    workerUrl = "https://mobilemoney.ladjitraore5995.workers.dev/s2s/deliver";
+                }
 
                 try {
-                    // 1. Notification du Worker S2S (Donner accès au client)
+                    // 1. On notifie le Worker Cloudflare pour donner le produit au client
                     const s2sResponse = await fetch(workerUrl, {
                         method: "POST",
-                        headers: { "Content-Type": "application/json", "x-server-key": process.env.S2S_SECRET_KEY },
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-server-key": process.env.S2S_SECRET_KEY 
+                        },
                         body: JSON.stringify({
                             token: invoice.token,
                             metadata: transactionMetadata,
@@ -251,33 +177,32 @@ app.post('/webhook', async (req, res) => {
                         })
                     });
 
-                    if(s2sResponse.ok) {
+                    if(!s2sResponse.ok) {
+                        console.error(`Erreur critique Worker [${transactionType}]:`, await s2sResponse.text());
+                    } else {
                         console.log(`Livraison réussie pour le Worker [${transactionType}]`);
 
                         // -----------------------------------------------------------------
-                        // 2. DISTRIBUTION AUTOMATIQUE (B2C) MOBILE MONEY
+                        // 2. DISTRIBUTION AUTOMATIQUE À L'AUTEUR (Seulement pour les PDF)
                         // -----------------------------------------------------------------
-                        
-                        // Cas A : L'auteur vend un PDF
-                        if (transactionType === "pdf" && transactionMetadata.partAuteur > 0) {
-                            await transfererArgentB2C(
-                                transactionMetadata.secretAuthorPhone,
-                                transactionMetadata.partAuteur,
-                                transactionMetadata.secretMobileMoneyOperator 
-                            );
-                        }
-                        
-                        // Cas B : Paiement généré par un Ambassadeur (Push)
-                        else if (transactionType === "push" && transactionMetadata.partAmbassadeur > 0) {
-                            await transfererArgentB2C(
-                                transactionMetadata.ambassadeurPhone,
-                                transactionMetadata.partAmbassadeur,
-                                transactionMetadata.ambassadeurOperator 
-                            );
+                        if (transactionType === "pdf" && transactionMetadata.partAuteur > 0 && transactionMetadata.secretAuthorPhone) {
+                            try {
+                                console.log(`Début du transfert de ${transactionMetadata.partAuteur} FCFA vers ${transactionMetadata.secretAuthorPhone}`);
+                                
+                                const directPay = new paydunya.DirectPay(setup);
+                                const virementResult = await directPay.creditAccount(
+                                    transactionMetadata.secretAuthorPhone,
+                                    transactionMetadata.partAuteur
+                                );
+
+                                console.log("Succès du transfert vers l'auteur :", virementResult);
+                            } catch (virementError) {
+                                // On attrape l'erreur pour NE PAS planter le serveur Express
+                                // Si le virement échoue (ex: solde insuffisant), le client garde son PDF
+                                console.error("Échec du transfert vers l'auteur :", virementError.message || virementError);
+                            }
                         }
                         // -----------------------------------------------------------------
-                    } else {
-                        console.error(`Erreur Worker [${transactionType}]:`, await s2sResponse.text());
                     }
                 } catch (fetchError) {
                     console.error(`Échec communication Worker [${transactionType}]:`, fetchError);
@@ -285,6 +210,7 @@ app.post('/webhook', async (req, res) => {
             }
         }
         
+        // On répond toujours 200 à PayDunya pour clôturer le webhook
         res.status(200).send("Notification traitée");
 
     } catch (error) {
