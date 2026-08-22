@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const paydunya = require('paydunya');
@@ -82,7 +81,7 @@ app.post('/creer-paiement-pdf', async (req, res) => {
         invoice.addItem(description || "Achat PDF chez Ika-Book", 1, montantInt, montantInt);
         invoice.totalAmount = montantInt;
         invoice.addCustomData("userId", userId);
-        invoice.addCustomData("metadata", metadata);
+        invoice.addCustomData("metadata", metadata); // Le worker n'envoie plus la partAuteur ici
         invoice.addCustomData("type", "pdf");
 
         await invoice.create();
@@ -128,9 +127,8 @@ app.post('/creer-paiement-push', async (req, res) => {
 });
 
 // ====================================================================
-// 4. LE WEBHOOK CENTRALISÉ AVEC DISTRIBUTION (DIRECT PAY)
+// 4. LE WEBHOOK CENTRALISÉ AVEC DISTRIBUTION
 // ====================================================================
-
 app.post('/webhook', async (req, res) => {
     try {
         const data = req.body.data;
@@ -163,7 +161,7 @@ app.post('/webhook', async (req, res) => {
                 }
 
                 try {
-                    // 1. On notifie le Worker Cloudflare pour donner le produit au client
+                    // On notifie le Worker Cloudflare pour donner le produit au client
                     const s2sResponse = await fetch(workerUrl, {
                         method: "POST",
                         headers: {
@@ -181,28 +179,7 @@ app.post('/webhook', async (req, res) => {
                         console.error(`Erreur critique Worker [${transactionType}]:`, await s2sResponse.text());
                     } else {
                         console.log(`Livraison réussie pour le Worker [${transactionType}]`);
-
-                        // -----------------------------------------------------------------
-                        // 2. DISTRIBUTION AUTOMATIQUE À L'AUTEUR (Seulement pour les PDF)
-                        // -----------------------------------------------------------------
-                        if (transactionType === "pdf" && transactionMetadata.partAuteur > 0 && transactionMetadata.secretAuthorPhone) {
-                            try {
-                                console.log(`Début du transfert de ${transactionMetadata.partAuteur} FCFA vers ${transactionMetadata.secretAuthorPhone}`);
-                                
-                                const directPay = new paydunya.DirectPay(setup);
-                                const virementResult = await directPay.creditAccount(
-                                    transactionMetadata.secretAuthorPhone,
-                                    transactionMetadata.partAuteur
-                                );
-
-                                console.log("Succès du transfert vers l'auteur :", virementResult);
-                            } catch (virementError) {
-                                // On attrape l'erreur pour NE PAS planter le serveur Express
-                                // Si le virement échoue (ex: solde insuffisant), le client garde son PDF
-                                console.error("Échec du transfert vers l'auteur :", virementError.message || virementError);
-                            }
-                        }
-                        // -----------------------------------------------------------------
+                        // MODIFICATION : Le bloc de reversement immédiat de la partAuteur a été supprimé ici
                     }
                 } catch (fetchError) {
                     console.error(`Échec communication Worker [${transactionType}]:`, fetchError);
@@ -235,6 +212,52 @@ app.get('/statut-paiement/:token', async (req, res) => {
         }
     } catch (e) {
         res.status(500).json({ success: false, status: 'unknown', error: e.message });
+    }
+});
+
+// ====================================================================
+// 6. ROUTE PUSH DE MASSE (Appelée par le CRON du Worker PDF le 15 du mois)
+// ====================================================================
+app.post('/s2s/payout-authors', async (req, res) => {
+    try {
+        // 1. Vérification de sécurité avec la clé S2S
+        if (req.headers['x-server-key'] !== process.env.S2S_SECRET_KEY) {
+            return res.status(401).json({ success: false, error: "Non autorisé" });
+        }
+
+        const { payouts } = req.body;
+
+        // Validation du format des données envoyées par le Worker
+        if (!payouts || !Array.isArray(payouts)) {
+            return res.status(400).json({ success: false, error: "Format des virements invalide" });
+        }
+
+        const directPay = new paydunya.DirectPay(setup);
+        const resultats = [];
+
+        // 2. Boucle pour verser l'argent à chaque auteur
+        for (const author of payouts) {
+            try {
+                console.log(`Début du transfert mensuel de ${author.amount} FCFA vers ${author.phone}`);
+                const response = await directPay.creditAccount(author.phone, author.amount);
+                console.log(`Succès transfert vers ${author.phone}:`, response);
+                
+                resultats.push({ phone: author.phone, status: 'success' });
+            } catch (err) {
+                console.error(`Échec du transfert vers ${author.phone}:`, err.message || err);
+                resultats.push({ phone: author.phone, status: 'failed', error: err.message });
+            }
+        }
+
+        return res.status(200).json({ 
+            success: true, 
+            message: "La campagne de paiements mensuels a été traitée.",
+            details: resultats 
+        });
+
+    } catch (error) {
+        console.error("Erreur critique route payout-authors:", error);
+        return res.status(500).json({ success: false, error: "Erreur serveur interne" });
     }
 });
 
