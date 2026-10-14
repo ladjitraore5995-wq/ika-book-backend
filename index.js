@@ -7,19 +7,21 @@ const crypto = require('crypto');
 const app = express();
 
 // ====================================================================
-// 1. MIDDLEWARES
+// 1. MIDDLEWARES & PARSING
 // ====================================================================
 app.use(cors());
+
+// PayDunya envoie des callbacks au format application/x-www-form-urlencoded
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Route de test & Health check
+// Route de santé / Health check
 app.get('/', (req, res) => {
-    res.status(200).json({ message: "L'API de paiement Ika-Book est en ligne et fonctionnelle !" });
+    res.status(200).json({ success: true, message: "L'API de paiement Ika-Book est en ligne et opérationnelle !" });
 });
 
 // ====================================================================
-// 2. CONFIGURATION PAYDUNYA (AVEC NETTOYAGE TRIM)
+// 2. CONFIGURATION PAYDUNYA
 // ====================================================================
 const setup = new paydunya.Setup({
     masterKey: (process.env.PAYDUNYA_MASTER_KEY || '').trim(),
@@ -39,18 +41,18 @@ const store = new paydunya.Store({
     callbackURL: "https://api.ika-book.com/webhook"
 });
 
-// Helper pour instancier et configurer une facture PayDunya
+// Helper pour instancier et configurer une facture PayDunya (PAR)
 function buildInvoice(montantInt, description, userId, metadata, type) {
     const invoice = new paydunya.CheckoutInvoice(setup, store);
-    invoice.addItem(description, 1, montantInt, montantInt);
+    invoice.addItem(description, 1, montantInt, montantInt, description);
     invoice.totalAmount = montantInt;
     
-    // Données personnalisées transmises lors du callback IPN
+    // Ajout des données personnalisées récupérables lors de l'IPN/Webhook
     if (userId) invoice.addCustomData("userId", userId);
     if (metadata) invoice.addCustomData("metadata", metadata);
     invoice.addCustomData("type", type);
 
-    // URLs de redirection navigateur après action du client
+    // Redirections navigateur pour l'utilisateur final
     invoice.returnURL = "https://ika-book.com/paiement-reussi";
     invoice.cancelURL = "https://ika-book.com/paiement-annule";
 
@@ -71,13 +73,13 @@ app.post('/creer-paiement', async (req, res) => {
             return res.status(400).json({ success: false, message: `Montant invalide reçu: ${montant}` });
         }
 
-        const invoice = buildInvoice(montantInt, description || "Achat de crédits chez Ika-Book", userId, metadata, "credit");
+        const invoice = buildInvoice(montantInt, description || "Achat de crédits Ika-Book", userId, metadata, "credit");
         const status = await invoice.create();
 
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture PayDunya" });
+            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur lors de la création de la facture PayDunya." });
         }
     } catch (error) {
         console.error("Erreur /creer-paiement:", error.message || error);
@@ -95,13 +97,13 @@ app.post('/creer-paiement-pdf', async (req, res) => {
             return res.status(400).json({ success: false, message: "Montant invalide" });
         }
 
-        const invoice = buildInvoice(montantInt, description || "Achat PDF chez Ika-Book", userId, metadata, "pdf");
+        const invoice = buildInvoice(montantInt, description || "Achat PDF Ika-Book", userId, metadata, "pdf");
         const status = await invoice.create();
 
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture" });
+            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de la facture PDF." });
         }
     } catch (error) {
         console.error("Erreur /creer-paiement-pdf:", error.message || error);
@@ -119,13 +121,13 @@ app.post('/creer-paiement-push', async (req, res) => {
             return res.status(400).json({ success: false, message: "Montant invalide" });
         }
 
-        const invoice = buildInvoice(montantInt, description || "Paiement Push chez Ika-Book", userId, metadata, "push");
+        const invoice = buildInvoice(montantInt, description || "Paiement Push Ambassadeur", userId, metadata, "push");
         const status = await invoice.create();
 
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture" });
+            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de la facture Push." });
         }
     } catch (error) {
         console.error("Erreur /creer-paiement-push:", error.message || error);
@@ -134,22 +136,24 @@ app.post('/creer-paiement-push', async (req, res) => {
 });
 
 // ====================================================================
-// 4. WEBHOOK CENTRALISÉ (IPN)
+// 4. WEBHOOK / IPN CENTRALISÉ
 // ====================================================================
 app.post('/webhook', async (req, res) => {
     try {
-        const data = req.body.data;
-        if (!data) return res.status(400).send("Aucune donnée reçue");
+        // PayDunya transmet les données sous le nœud "data"
+        const payloadData = req.body.data;
+        if (!payloadData) return res.status(400).send("Aucune donnée reçue");
 
-        const { status, hash, invoice, custom_data } = data;
+        const { status, hash, invoice, custom_data, receipt_url } = payloadData;
         
-        // Validation du Hash SHA-512 avec la Master Key
+        // Vérification de la signature SHA-512 de la MasterKey
         const masterKeyHash = crypto
             .createHash('sha512')
             .update((process.env.PAYDUNYA_MASTER_KEY || '').trim())
             .digest('hex');
 
         if (hash !== masterKeyHash) {
+            console.warn("Webhook rejeté : Signature hash invalide.");
             return res.status(403).send("Signature invalide");
         }
 
@@ -173,30 +177,30 @@ app.post('/webhook', async (req, res) => {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
-                            "x-server-key": process.env.S2S_SECRET_KEY 
+                            "x-server-key": (process.env.S2S_SECRET_KEY || '').trim()
                         },
                         body: JSON.stringify({
-                            token: invoice ? invoice.token : null,
+                            token: invoice ? invoice.token : payloadData.token,
                             metadata: transactionMetadata,
-                            invoice_url: data.receipt_url || ""
+                            invoice_url: receipt_url || ""
                         })
                     });
 
                     if (!s2sResponse.ok) {
-                        console.error(`Erreur Worker [${transactionType}]:`, await s2sResponse.text());
+                        console.error(`Erreur livraison Worker [${transactionType}]:`, await s2sResponse.text());
                     } else {
-                        console.log(`Livraison réussie pour le Worker [${transactionType}]`);
+                        console.log(`Livraison transmise au Worker [${transactionType}] avec succès.`);
                     }
                 } catch (fetchError) {
-                    console.error(`Échec communication Worker [${transactionType}]:`, fetchError);
+                    console.error(`Échec communication Worker [${transactionType}]:`, fetchError.message);
                 }
             }
         }
         
-        return res.status(200).send("Notification traitée");
+        return res.status(200).send("Notification IPN traitée avec succès");
 
     } catch (error) {
-        console.error("Erreur Webhook:", error);
+        console.error("Erreur critique Webhook:", error);
         return res.status(500).send("Erreur interne du serveur");
     }
 });
@@ -208,11 +212,12 @@ app.get('/statut-paiement/:token', async (req, res) => {
     try {
         const token = req.params.token;
         const invoice = new paydunya.CheckoutInvoice(setup, store);
-        const status = await invoice.confirm(token); 
         
-        if (status) {
+        const isConfirmed = await invoice.confirm(token); 
+        
+        if (isConfirmed) {
             return res.status(200).json({ 
-                success: true, 
+                success: invoice.status === 'completed', 
                 status: invoice.status, 
                 customer: invoice.customer || null,
                 receipt_url: invoice.receiptURL || null 
@@ -226,11 +231,11 @@ app.get('/statut-paiement/:token', async (req, res) => {
 });
 
 // ====================================================================
-// 6. VIREMENTS AUTOMATIQUES (PER / Payouts)
+// 6. VIREMENTS AUTOMATIQUES (PER / Payouts DirectPay)
 // ====================================================================
 app.post('/s2s/payout-authors', async (req, res) => {
     try {
-        if (req.headers['x-server-key'] !== process.env.S2S_SECRET_KEY) {
+        if (req.headers['x-server-key'] !== (process.env.S2S_SECRET_KEY || '').trim()) {
             return res.status(401).json({ success: false, error: "Non autorisé" });
         }
 
@@ -245,26 +250,29 @@ app.post('/s2s/payout-authors', async (req, res) => {
 
         for (const author of payouts) {
             try {
-                console.log(`Transfert de ${author.amount} FCFA vers ${author.phone}`);
+                console.log(`Transfert PER de ${author.amount} FCFA vers ${author.phone}`);
                 const response = await directPay.creditAccount(author.phone, author.amount);
                 resultats.push({ phone: author.phone, status: 'success', details: response });
             } catch (err) {
-                console.error(`Échec du transfert vers ${author.phone}:`, err.message || err);
+                console.error(`Échec transfert PER (${author.phone}):`, err.message || err);
                 resultats.push({ phone: author.phone, status: 'failed', error: err.message || err });
             }
         }
 
         return res.status(200).json({ 
             success: true, 
-            message: "Traitement de la campagne de virements terminé.",
+            message: "Campagne de virements PER terminée.",
             details: resultats 
         });
 
     } catch (error) {
-        console.error("Erreur route payout-authors:", error);
+        console.error("Erreur /s2s/payout-authors:", error);
         return res.status(500).json({ success: false, error: "Erreur serveur interne" });
     }
 });
 
+// ====================================================================
+// 7. DÉMARRAGE DU SERVEUR
+// ====================================================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Serveur en écoute sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`Serveur Express PayDunya prêt et en écoute sur le port ${PORT}`));
