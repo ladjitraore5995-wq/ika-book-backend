@@ -9,7 +9,7 @@ const app = express();
 // ====================================================================
 // 0. FONCTION D'ASSAINISSEMENT DES VARIABLES D'ENVIRONNEMENT
 // ====================================================================
-// Supprime les caractères non-ASCII (espaces insécables, guillemets parasites, retour chariot)
+// Supprime les caractères non-ASCII (espaces insécables, guillemets parasites, retours chariot)
 const cleanEnv = (val) => (val || '').replace(/[^\x20-\x7E]/g, '').trim();
 
 // ====================================================================
@@ -65,12 +65,8 @@ function buildInvoice(montantInt, description, userId, metadata, type) {
     return invoice;
 }
 
-// ====================================================================
-// 3. ROUTES DE CRÉATION DE PAIEMENT (PAR)
-// ====================================================================
-
-// --- 3.1 ACHAT DE CRÉDITS ---
-app.post('/creer-paiement', async (req, res) => {
+// Fonction générique de création de facture PayDunya
+async function handleCreateInvoice(req, res, defaultDesc, type) {
     try {
         const { montant, description, userId, metadata } = req.body;
         const montantInt = parseInt(montant, 10);
@@ -79,82 +75,51 @@ app.post('/creer-paiement', async (req, res) => {
             return res.status(400).json({ success: false, message: `Montant invalide reçu: ${montant}` });
         }
 
-        const invoice = buildInvoice(montantInt, description || "Achat de crédits Ika-Book", userId, metadata, "credit");
+        const invoice = buildInvoice(montantInt, description || defaultDesc, userId, metadata, type);
         const status = await invoice.create();
 
-        if (status && invoice.url) {
-            return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
+        // Résolution robuste de l'URL de redirection (PayDunya place parfois l'URL dans responseText)
+        const redirectUrl = invoice.url || (invoice.responseText && invoice.responseText.startsWith('http') ? invoice.responseText : null);
+
+        if (status && redirectUrl) {
+            return res.status(200).json({ 
+                success: true, 
+                invoice_url: redirectUrl, 
+                token: invoice.token 
+            });
         } else {
-            console.error("Échec création facture PayDunya Crédit:", invoice.responseText, "Code:", invoice.responseCode);
+            console.error(`Détails échec PayDunya [${type}]:`, {
+                status: status,
+                responseText: invoice.responseText,
+                responseCode: invoice.responseCode,
+                token: invoice.token,
+                mode: cleanEnv(process.env.PAYDUNYA_MODE)
+            });
+
             return res.status(400).json({ 
                 success: false, 
-                message: invoice.responseText || "Erreur lors de la création de la facture PayDunya.",
+                message: `Erreur PayDunya (${invoice.responseText || 'Échec création'}). Vérifiez le mode test/live des clés.`,
                 code: invoice.responseCode 
             });
         }
     } catch (error) {
-        console.error("Erreur critique /creer-paiement:", error.message || error);
+        console.error(`Erreur critique /creer-paiement [${type}]:`, error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
-});
+}
+
+// ====================================================================
+// 3. ROUTES DE CRÉATION DE PAIEMENT (PAR)
+// ====================================================================
+
+// --- 3.1 ACHAT DE CRÉDITS ---
+app.post('/creer-paiement', (req, res) => handleCreateInvoice(req, res, "Achat de crédits Ika-Book", "credit"));
 
 // --- 3.2 ACHAT DE PDF ---
-app.post('/creer-paiement-pdf', async (req, res) => {
-    try {
-        const { montant, description, userId, metadata } = req.body;
-        const montantInt = parseInt(montant, 10);
-
-        if (isNaN(montantInt) || montantInt <= 0) {
-            return res.status(400).json({ success: false, message: "Montant invalide" });
-        }
-
-        const invoice = buildInvoice(montantInt, description || "Achat PDF Ika-Book", userId, metadata, "pdf");
-        const status = await invoice.create();
-
-        if (status && invoice.url) {
-            return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
-        } else {
-            console.error("Échec création facture PayDunya PDF:", invoice.responseText, "Code:", invoice.responseCode);
-            return res.status(400).json({ 
-                success: false, 
-                message: invoice.responseText || "Erreur de création de la facture PDF.",
-                code: invoice.responseCode 
-            });
-        }
-    } catch (error) {
-        console.error("Erreur critique /creer-paiement-pdf:", error.message || error);
-        return res.status(500).json({ success: false, error: error.message });
-    }
-});
+app.post('/creer-paiement-pdf', (req, res) => handleCreateInvoice(req, res, "Achat PDF Ika-Book", "pdf"));
 
 // --- 3.3 PAIEMENT PUSH (AMBASSADEUR) ---
-app.post('/creer-paiement-push', async (req, res) => {
-    try {
-        const { montant, description, userId, metadata } = req.body;
-        const montantInt = parseInt(montant, 10);
-
-        if (isNaN(montantInt) || montantInt <= 0) {
-            return res.status(400).json({ success: false, message: "Montant invalide" });
-        }
-
-        const invoice = buildInvoice(montantInt, description || "Paiement Push Ambassadeur", userId, metadata, "push");
-        const status = await invoice.create();
-
-        if (status && invoice.url) {
-            return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
-        } else {
-            console.error("Échec création facture PayDunya Push:", invoice.responseText, "Code:", invoice.responseCode);
-            return res.status(400).json({ 
-                success: false, 
-                message: invoice.responseText || "Erreur de création de la facture Push.",
-                code: invoice.responseCode 
-            });
-        }
-    } catch (error) {
-        console.error("Erreur critique /creer-paiement-push:", error.message || error);
-        return res.status(500).json({ success: false, error: error.message });
-    }
-});
+app.post('/creer-paiement-push', (req, res) => handleCreateInvoice(req, res, "Paiement Push Ambassadeur", "push"));
 
 // ====================================================================
 // 4. WEBHOOK / IPN CENTRALISÉ
