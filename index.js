@@ -19,14 +19,14 @@ app.get('/', (req, res) => {
 });
 
 // ====================================================================
-// 2. CONFIGURATION PAYDUNYA
+// 2. CONFIGURATION PAYDUNYA (AVEC NETTOYAGE TRIM)
 // ====================================================================
 const setup = new paydunya.Setup({
-    masterKey: process.env.PAYDUNYA_MASTER_KEY,
-    privateKey: process.env.PAYDUNYA_PRIVATE_KEY,
-    publicKey: process.env.PAYDUNYA_PUBLIC_KEY,
-    token: process.env.PAYDUNYA_TOKEN,
-    mode: process.env.PAYDUNYA_MODE || 'test'
+    masterKey: (process.env.PAYDUNYA_MASTER_KEY || '').trim(),
+    privateKey: (process.env.PAYDUNYA_PRIVATE_KEY || '').trim(),
+    publicKey: (process.env.PAYDUNYA_PUBLIC_KEY || '').trim(),
+    token: (process.env.PAYDUNYA_TOKEN || '').trim(),
+    mode: (process.env.PAYDUNYA_MODE || 'test').trim()
 });
 
 const store = new paydunya.Store({
@@ -45,12 +45,12 @@ function buildInvoice(montantInt, description, userId, metadata, type) {
     invoice.addItem(description, 1, montantInt, montantInt);
     invoice.totalAmount = montantInt;
     
-    // Données personnalisées pour le traitement post-paiement
+    // Données personnalisées transmises lors du callback IPN
     if (userId) invoice.addCustomData("userId", userId);
     if (metadata) invoice.addCustomData("metadata", metadata);
     invoice.addCustomData("type", type);
 
-    // URLs de redirection après action client (Casse officielle : returnURL / cancelURL)
+    // URLs de redirection navigateur après action du client
     invoice.returnURL = "https://ika-book.com/paiement-reussi";
     invoice.cancelURL = "https://ika-book.com/paiement-annule";
 
@@ -66,8 +66,9 @@ app.post('/creer-paiement', async (req, res) => {
     try {
         const { montant, description, userId, metadata } = req.body;
         const montantInt = parseInt(montant, 10);
+
         if (isNaN(montantInt) || montantInt <= 0) {
-            return res.status(400).json({ success: false, message: "Montant invalide" });
+            return res.status(400).json({ success: false, message: `Montant invalide reçu: ${montant}` });
         }
 
         const invoice = buildInvoice(montantInt, description || "Achat de crédits chez Ika-Book", userId, metadata, "credit");
@@ -76,10 +77,10 @@ app.post('/creer-paiement', async (req, res) => {
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture" });
+            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture PayDunya" });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement:", error);
+        console.error("Erreur /creer-paiement:", error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -89,6 +90,7 @@ app.post('/creer-paiement-pdf', async (req, res) => {
     try {
         const { montant, description, userId, metadata } = req.body;
         const montantInt = parseInt(montant, 10);
+
         if (isNaN(montantInt) || montantInt <= 0) {
             return res.status(400).json({ success: false, message: "Montant invalide" });
         }
@@ -102,7 +104,7 @@ app.post('/creer-paiement-pdf', async (req, res) => {
             return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture" });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement-pdf:", error);
+        console.error("Erreur /creer-paiement-pdf:", error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -112,6 +114,7 @@ app.post('/creer-paiement-push', async (req, res) => {
     try {
         const { montant, description, userId, metadata } = req.body;
         const montantInt = parseInt(montant, 10);
+
         if (isNaN(montantInt) || montantInt <= 0) {
             return res.status(400).json({ success: false, message: "Montant invalide" });
         }
@@ -125,7 +128,7 @@ app.post('/creer-paiement-push', async (req, res) => {
             return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de facture" });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement-push:", error);
+        console.error("Erreur /creer-paiement-push:", error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -143,7 +146,7 @@ app.post('/webhook', async (req, res) => {
         // Validation du Hash SHA-512 avec la Master Key
         const masterKeyHash = crypto
             .createHash('sha512')
-            .update(process.env.PAYDUNYA_MASTER_KEY)
+            .update((process.env.PAYDUNYA_MASTER_KEY || '').trim())
             .digest('hex');
 
         if (hash !== masterKeyHash) {
@@ -190,7 +193,6 @@ app.post('/webhook', async (req, res) => {
             }
         }
         
-        // Toujours répondre 200 à PayDunya pour valider la réception
         return res.status(200).send("Notification traitée");
 
     } catch (error) {
