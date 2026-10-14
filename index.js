@@ -7,6 +7,12 @@ const crypto = require('crypto');
 const app = express();
 
 // ====================================================================
+// 0. FONCTION D'ASSAINISSEMENT DES VARIABLES D'ENVIRONNEMENT
+// ====================================================================
+// Supprime les caractères non-ASCII (espaces insécables, guillemets parasites, retour chariot)
+const cleanEnv = (val) => (val || '').replace(/[^\x20-\x7E]/g, '').trim();
+
+// ====================================================================
 // 1. MIDDLEWARES & PARSING
 // ====================================================================
 app.use(cors());
@@ -24,11 +30,11 @@ app.get('/', (req, res) => {
 // 2. CONFIGURATION PAYDUNYA
 // ====================================================================
 const setup = new paydunya.Setup({
-    masterKey: (process.env.PAYDUNYA_MASTER_KEY || '').trim(),
-    privateKey: (process.env.PAYDUNYA_PRIVATE_KEY || '').trim(),
-    publicKey: (process.env.PAYDUNYA_PUBLIC_KEY || '').trim(),
-    token: (process.env.PAYDUNYA_TOKEN || '').trim(),
-    mode: (process.env.PAYDUNYA_MODE || 'test').trim()
+    masterKey: cleanEnv(process.env.PAYDUNYA_MASTER_KEY),
+    privateKey: cleanEnv(process.env.PAYDUNYA_PRIVATE_KEY),
+    publicKey: cleanEnv(process.env.PAYDUNYA_PUBLIC_KEY),
+    token: cleanEnv(process.env.PAYDUNYA_TOKEN),
+    mode: cleanEnv(process.env.PAYDUNYA_MODE) || 'test'
 });
 
 const store = new paydunya.Store({
@@ -79,10 +85,15 @@ app.post('/creer-paiement', async (req, res) => {
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur lors de la création de la facture PayDunya." });
+            console.error("Échec création facture PayDunya Crédit:", invoice.responseText, "Code:", invoice.responseCode);
+            return res.status(400).json({ 
+                success: false, 
+                message: invoice.responseText || "Erreur lors de la création de la facture PayDunya.",
+                code: invoice.responseCode 
+            });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement:", error.message || error);
+        console.error("Erreur critique /creer-paiement:", error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -103,10 +114,15 @@ app.post('/creer-paiement-pdf', async (req, res) => {
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de la facture PDF." });
+            console.error("Échec création facture PayDunya PDF:", invoice.responseText, "Code:", invoice.responseCode);
+            return res.status(400).json({ 
+                success: false, 
+                message: invoice.responseText || "Erreur de création de la facture PDF.",
+                code: invoice.responseCode 
+            });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement-pdf:", error.message || error);
+        console.error("Erreur critique /creer-paiement-pdf:", error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -127,10 +143,15 @@ app.post('/creer-paiement-push', async (req, res) => {
         if (status && invoice.url) {
             return res.status(200).json({ success: true, invoice_url: invoice.url, token: invoice.token });
         } else {
-            return res.status(400).json({ success: false, message: invoice.responseText || "Erreur de création de la facture Push." });
+            console.error("Échec création facture PayDunya Push:", invoice.responseText, "Code:", invoice.responseCode);
+            return res.status(400).json({ 
+                success: false, 
+                message: invoice.responseText || "Erreur de création de la facture Push.",
+                code: invoice.responseCode 
+            });
         }
     } catch (error) {
-        console.error("Erreur /creer-paiement-push:", error.message || error);
+        console.error("Erreur critique /creer-paiement-push:", error.message || error);
         return res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -149,7 +170,7 @@ app.post('/webhook', async (req, res) => {
         // Vérification de la signature SHA-512 de la MasterKey
         const masterKeyHash = crypto
             .createHash('sha512')
-            .update((process.env.PAYDUNYA_MASTER_KEY || '').trim())
+            .update(cleanEnv(process.env.PAYDUNYA_MASTER_KEY))
             .digest('hex');
 
         if (hash !== masterKeyHash) {
@@ -177,7 +198,7 @@ app.post('/webhook', async (req, res) => {
                         method: "POST",
                         headers: {
                             "Content-Type": "application/json",
-                            "x-server-key": (process.env.S2S_SECRET_KEY || '').trim()
+                            "x-server-key": cleanEnv(process.env.S2S_SECRET_KEY)
                         },
                         body: JSON.stringify({
                             token: invoice ? invoice.token : payloadData.token,
@@ -235,7 +256,7 @@ app.get('/statut-paiement/:token', async (req, res) => {
 // ====================================================================
 app.post('/s2s/payout-authors', async (req, res) => {
     try {
-        if (req.headers['x-server-key'] !== (process.env.S2S_SECRET_KEY || '').trim()) {
+        if (req.headers['x-server-key'] !== cleanEnv(process.env.S2S_SECRET_KEY)) {
             return res.status(401).json({ success: false, error: "Non autorisé" });
         }
 
