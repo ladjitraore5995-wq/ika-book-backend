@@ -7,10 +7,20 @@ const crypto = require('crypto');
 const app = express();
 
 // ====================================================================
-// 0. FONCTION D'ASSAINISSEMENT DES VARIABLES D'ENVIRONNEMENT
+// 0. FONCTION D'ASSAINISSEMENT & VÉRIFICATION DES VARIABLES D'ENV
 // ====================================================================
 // Supprime les caractères non-ASCII (espaces insécables, guillemets parasites, retours chariot)
 const cleanEnv = (val) => (val || '').replace(/[^\x20-\x7E]/g, '').trim();
+
+// Vérifie la présence des clés requises au démarrage
+function checkEnvKeys() {
+    const required = ['PAYDUNYA_MASTER_KEY', 'PAYDUNYA_PRIVATE_KEY', 'PAYDUNYA_PUBLIC_KEY', 'PAYDUNYA_TOKEN'];
+    const missing = required.filter(key => !process.env[key]);
+    if (missing.length > 0) {
+        console.warn(`⚠️ ATTENTION : Les variables d'environnement suivantes sont manquantes dans .env : ${missing.join(', ')}`);
+    }
+}
+checkEnvKeys();
 
 // ====================================================================
 // 1. MIDDLEWARES & PARSING
@@ -65,7 +75,7 @@ function buildInvoice(montantInt, description, userId, metadata, type) {
     return invoice;
 }
 
-// Fonction générique de création de facture PayDunya
+// Fonction générique de création de facture PayDunya corrigée
 async function handleCreateInvoice(req, res, defaultDesc, type) {
     try {
         const { montant, description, userId, metadata } = req.body;
@@ -76,12 +86,17 @@ async function handleCreateInvoice(req, res, defaultDesc, type) {
         }
 
         const invoice = buildInvoice(montantInt, description || defaultDesc, userId, metadata, type);
-        const status = await invoice.create();
+        
+        // invoice.create() retourne true/false dans le SDK PayDunya
+        const isCreated = await invoice.create();
 
-        // Résolution robuste de l'URL de redirection (PayDunya place parfois l'URL dans responseText)
-        const redirectUrl = invoice.url || (invoice.responseText && invoice.responseText.startsWith('http') ? invoice.responseText : null);
+        // Extraction de l'URL de paiement (invoice.url ou invoice.invoice_url)
+        const redirectUrl = invoice.url || invoice.invoice_url || (invoice.responseText && invoice.responseText.startsWith('http') ? invoice.responseText : null);
 
-        if (status && redirectUrl) {
+        const responseCode = invoice.response_code || invoice.responseCode;
+        const responseText = invoice.response_text || invoice.responseText;
+
+        if (isCreated && redirectUrl) {
             return res.status(200).json({ 
                 success: true, 
                 invoice_url: redirectUrl, 
@@ -89,17 +104,18 @@ async function handleCreateInvoice(req, res, defaultDesc, type) {
             });
         } else {
             console.error(`Détails échec PayDunya [${type}]:`, {
-                status: status,
-                responseText: invoice.responseText,
-                responseCode: invoice.responseCode,
+                isCreated: isCreated,
+                status: invoice.status,
+                responseText: responseText,
+                responseCode: responseCode,
                 token: invoice.token,
-                mode: cleanEnv(process.env.PAYDUNYA_MODE)
+                mode: cleanEnv(process.env.PAYDUNYA_MODE) || 'test'
             });
 
             return res.status(400).json({ 
                 success: false, 
-                message: `Erreur PayDunya (${invoice.responseText || 'Échec création'}). Vérifiez le mode test/live des clés.`,
-                code: invoice.responseCode 
+                message: `Erreur PayDunya (${responseText || 'Échec de création de facture'}). Vérifiez la validité de vos clés API.`,
+                code: responseCode 
             });
         }
     } catch (error) {
