@@ -12,10 +12,10 @@ const app = express();
 const cleanEnv = (val) => (val || '').replace(/[^\x20-\x7E]/g, '').trim();
 
 function checkEnvKeys() {
-    const required = ['PAYDUNYA_MASTER_KEY', 'PAYDUNYA_PRIVATE_KEY', 'PAYDUNYA_PUBLIC_KEY', 'PAYDUNYA_TOKEN'];
+    const required = ['PAYDUNYA_MASTER_KEY', 'PAYDUNYA_PRIVATE_KEY', 'PAYDUNYA_PUBLIC_KEY', 'PAYDUNYA_TOKEN', 'S2S_SECRET_KEY'];
     const missing = required.filter(key => !process.env[key]);
     if (missing.length > 0) {
-        console.warn(`⚠️ ATTENTION : Les variables d'environnement suivantes sont manquantes : ${missing.join(', ')}`);
+        console.warn(`⚠️ ATTENTION : Variables d'environnement manquantes : ${missing.join(', ')}`);
     }
 }
 checkEnvKeys();
@@ -23,7 +23,11 @@ checkEnvKeys();
 // ====================================================================
 // 1. MIDDLEWARES & PARSING
 // ====================================================================
-app.use(cors());
+app.use(cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-server-key']
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -53,13 +57,20 @@ const store = new paydunya.Store({
     callbackURL: "https://api.ika-book.com/webhook"
 });
 
-function buildInvoice(montantInt, description, userId, metadata, type) {
+function buildInvoice(montantInt, description, userId, nomClient, metadata, type) {
     const invoice = new paydunya.CheckoutInvoice(setup, store);
     invoice.addItem(description, 1, montantInt, montantInt, description);
     invoice.totalAmount = montantInt;
     
-    if (userId) invoice.addCustomData("userId", userId);
-    if (metadata) invoice.addCustomData("metadata", metadata);
+    if (userId) invoice.addCustomData("userId", String(userId));
+    if (nomClient) invoice.addCustomData("nomClient", String(nomClient));
+    
+    // Sécurisation du format des métadonnées pour PayDunya (Objet ou String)
+    if (metadata) {
+        const safeMetadata = typeof metadata === 'object' ? JSON.stringify(metadata) : String(metadata);
+        invoice.addCustomData("metadata", safeMetadata);
+    }
+    
     invoice.addCustomData("type", type);
 
     invoice.returnURL = "https://ika-book.com/paiement-reussi";
@@ -68,26 +79,26 @@ function buildInvoice(montantInt, description, userId, metadata, type) {
     return invoice;
 }
 
-// Fonction générique de création de facture PayDunya corrigée
+// Fonction générique de création de facture PayDunya
 async function handleCreateInvoice(req, res, defaultDesc, type) {
     try {
-        const { montant, description, userId, metadata } = req.body;
+        const { montant, description, userId, nomClient, metadata } = req.body;
         const montantInt = parseInt(montant, 10);
 
         if (isNaN(montantInt) || montantInt <= 0) {
             return res.status(400).json({ success: false, message: `Montant invalide reçu: ${montant}` });
         }
 
-        const invoice = buildInvoice(montantInt, description || defaultDesc, userId, metadata, type);
+        const invoice = buildInvoice(montantInt, description || defaultDesc, userId, nomClient, metadata, type);
         
-        // Exécution de la création de facture auprès de PayDunya
+        // Création de la facture auprès de PayDunya
         await invoice.create();
 
         const responseCode = invoice.response_code || invoice.responseCode;
         const responseText = invoice.response_text || invoice.responseText;
         const token = invoice.token;
 
-        // Résolution robuste de l'URL de paiement de secours avec le Token
+        // Résolution de l'URL de redirection
         let redirectUrl = invoice.url || invoice.invoice_url;
         if (!redirectUrl && typeof invoice.getInvoiceUrl === 'function') {
             redirectUrl = invoice.getInvoiceUrl();
@@ -96,7 +107,7 @@ async function handleCreateInvoice(req, res, defaultDesc, type) {
             redirectUrl = `https://paydunya.com/checkout/invoice/${token}`;
         }
 
-        // Validation du succès : présence d'un jeton valide et statut pending/found
+        // Validation du succès de la facture
         const isSuccess = Boolean(token) && (
             invoice.status === 'pending' || 
             responseText === 'Transaction Found' || 
@@ -104,24 +115,17 @@ async function handleCreateInvoice(req, res, defaultDesc, type) {
         );
 
         if (isSuccess && redirectUrl) {
-            console.log(`[PayDunya ${type}] Facture créée avec succès, Token: ${token}`);
+            console.log(`[PayDunya ${type}] Facture créée avec succès | Token: ${token}`);
             return res.status(200).json({ 
                 success: true, 
                 invoice_url: redirectUrl, 
                 token: token 
             });
         } else {
-            console.error(`Détails échec PayDunya [${type}]:`, {
-                status: invoice.status,
-                responseText: responseText,
-                responseCode: responseCode,
-                token: token,
-                mode: cleanEnv(process.env.PAYDUNYA_MODE) || 'test'
-            });
-
+            console.error(`[Échec PayDunya ${type}]:`, { status: invoice.status, responseText, responseCode, token });
             return res.status(400).json({ 
                 success: false, 
-                message: `Erreur PayDunya (${responseText || 'Échec de création de facture'}). Vérifiez la validité de vos clés API.`,
+                message: `Erreur PayDunya (${responseText || 'Échec de création de facture'}).`,
                 code: responseCode 
             });
         }
@@ -132,7 +136,7 @@ async function handleCreateInvoice(req, res, defaultDesc, type) {
 }
 
 // ====================================================================
-// 3. ROUTES DE CRÉATION DE PAIEMENT (PAR)
+// 3. ROUTES DE CRÉATION DE PAIEMENT
 // ====================================================================
 app.post('/creer-paiement', (req, res) => handleCreateInvoice(req, res, "Achat de crédits Ika-Book", "credit"));
 app.post('/creer-paiement-pdf', (req, res) => handleCreateInvoice(req, res, "Achat PDF Ika-Book", "pdf"));
@@ -143,11 +147,12 @@ app.post('/creer-paiement-push', (req, res) => handleCreateInvoice(req, res, "Pa
 // ====================================================================
 app.post('/webhook', async (req, res) => {
     try {
-        const payloadData = req.body.data;
+        const payloadData = req.body.data || req.body;
         if (!payloadData) return res.status(400).send("Aucune donnée reçue");
 
         const { status, hash, invoice, custom_data, receipt_url } = payloadData;
         
+        // Vérification du Hash de sécurité PayDunya
         const masterKeyHash = crypto
             .createHash('sha512')
             .update(cleanEnv(process.env.PAYDUNYA_MASTER_KEY))
@@ -159,9 +164,19 @@ app.post('/webhook', async (req, res) => {
         }
 
         if (status === "completed" || status === "success") {
-            const transactionMetadata = custom_data ? custom_data.metadata : null;
-            const transactionType = custom_data ? custom_data.type : 'credit'; 
-            
+            const customData = custom_data || {};
+            let transactionMetadata = customData.metadata || null;
+            let transactionType = customData.type || null; 
+
+            // Auto-détection du type si non fourni
+            if (!transactionType) {
+                if (typeof transactionMetadata === 'string' && transactionMetadata.startsWith('CREDIT|')) {
+                    transactionType = 'credit';
+                } else {
+                    transactionType = 'pdf';
+                }
+            }
+
             if (transactionMetadata) {
                 let workerUrl = "";
 
@@ -173,6 +188,9 @@ app.post('/webhook', async (req, res) => {
                     workerUrl = "https://mobilemoney.ladjitraore5995.workers.dev/s2s/deliver";
                 }
 
+                const transactionToken = (invoice && invoice.token) ? invoice.token : payloadData.token;
+                const finalReceiptUrl = receipt_url || (invoice && (invoice.receipt_url || invoice.url)) || "";
+
                 try {
                     const s2sResponse = await fetch(workerUrl, {
                         method: "POST",
@@ -181,9 +199,9 @@ app.post('/webhook', async (req, res) => {
                             "x-server-key": cleanEnv(process.env.S2S_SECRET_KEY)
                         },
                         body: JSON.stringify({
-                            token: invoice ? invoice.token : payloadData.token,
+                            token: transactionToken,
                             metadata: transactionMetadata,
-                            invoice_url: receipt_url || ""
+                            invoice_url: finalReceiptUrl
                         })
                     });
 
@@ -217,11 +235,15 @@ app.get('/statut-paiement/:token', async (req, res) => {
         const isConfirmed = await invoice.confirm(token); 
         
         if (isConfirmed) {
+            const isCompleted = invoice.status === 'completed';
+            const receiptUrl = invoice.receiptURL || invoice.url || `https://paydunya.com/checkout/receipt/${token}`;
+            
             return res.status(200).json({ 
-                success: invoice.status === 'completed', 
+                success: isCompleted, 
                 status: invoice.status, 
                 customer: invoice.customer || null,
-                receipt_url: invoice.receiptURL || null 
+                invoice_url: receiptUrl,
+                receipt_url: receiptUrl 
             }); 
         } else {
             return res.status(404).json({ success: false, status: 'unknown' });
@@ -232,7 +254,7 @@ app.get('/statut-paiement/:token', async (req, res) => {
 });
 
 // ====================================================================
-// 6. VIREMENTS AUTOMATIQUES (PER / Payouts DirectPay)
+// 6. VIREMENTS AUTOMATIQUES AUTEURS (PER / Payouts DirectPay)
 // ====================================================================
 app.post('/s2s/payout-authors', async (req, res) => {
     try {
