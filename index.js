@@ -31,9 +31,14 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Route de santé / Health check
+// Route de santé globale
 app.get('/', (req, res) => {
     res.status(200).json({ success: true, message: "L'API de paiement Ika-Book est en ligne et opérationnelle !" });
+});
+
+// Route ultra-légère pour les pings anti-mise en veille (cron-job.org / UptimeRobot)
+app.get('/ping', (req, res) => {
+    res.status(200).send("OK");
 });
 
 // ====================================================================
